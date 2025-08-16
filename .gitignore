@@ -78,6 +78,12 @@ node_modules/
 # dataconnect generated files
 .dataconnect
 
+# Ignore build cache and local binaries
+carrot/.next/
+carrot/tailwindcss-*.exe
+carrot/temp/
+carrot/prisma/dev.db
+
 # local generated and tooling
 generated/
 carrot/generated/
