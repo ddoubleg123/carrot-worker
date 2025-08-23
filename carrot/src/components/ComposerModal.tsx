@@ -366,7 +366,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
           );
           const isCloudMp4 = typeof url === 'string' && /\/ingest\/.+\.mp4(\?.*)?$/i.test(url) && /^https?:\/\//.test(url) && !/youtube\.com|youtu\.be/i.test(url);
           // Dev-friendly: accept any direct .mp4 URL as playable
-          const isAnyMp4 = typeof url === 'string' && /\.mp4(\?.*)?$/i.test(url) && !/googlevideo\.com\/videoplayback/i.test(url);
+          const isAnyMp4 = typeof url === 'string' && \/\.mp4(\?.*)?$/i.test(url) && !/googlevideo\.com\/videoplayback/i.test(url);
           // Accept placeholder URLs for development
           const isPlaceholder = typeof url === 'string' && /\/api\/media\/placeholder(\?.*)?$/i.test(url);
           // Recognize (but do not accept) YouTube page URLs and transient googlevideo streams
@@ -963,6 +963,162 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
     }
   };
 
+<<<<<<< HEAD
+=======
+  // Color wheel sliding functions
+  const slideColorWheel = (direction: 'left' | 'right') => {
+    if (colorWheelRef.current) {
+      const scrollAmount = 200; // pixels to scroll
+      const currentScroll = colorWheelRef.current.scrollLeft;
+      const newScroll = direction === 'left' 
+        ? Math.max(0, currentScroll - scrollAmount)
+        : currentScroll + scrollAmount;
+      
+      colorWheelRef.current.scrollTo({
+        left: newScroll,
+        behavior: 'smooth'
+      });
+      setColorWheelScrollPosition(newScroll);
+    }
+  };
+
+  const canScrollLeft = colorWheelScrollPosition > 0;
+  const canScrollRight = colorWheelRef.current 
+    ? colorWheelScrollPosition < (colorWheelRef.current.scrollWidth - colorWheelRef.current.clientWidth)
+    : true;
+
+  // GIF handlers
+  const handleGifSelect = (gifUrl: string) => {
+    setSelectedGifUrl(gifUrl);
+    setShowGifPicker(false);
+    // Clear other media
+    setMediaPreview(null);
+    setMediaFile(null);
+    setAudioBlob(null);
+    setAudioUrl('');
+  };
+
+  // Network helper: fetch with timeout using AbortController
+  const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15000) => {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(t);
+    }
+  };
+
+  // Utility: load external script once
+  const loadScriptOnce = (src: string) => new Promise<void>((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(s);
+  });
+
+  // Lazy-load and init ffmpeg.wasm (component-scope)
+  const ensureFfmpeg = async () => {
+    if (ffmpegRef.current?.isLoaded()) return ffmpegRef.current;
+    // Prefer UMD from same-origin (CSP-friendly)
+    try {
+      await loadScriptOnce('/api/ffmpeg/ffmpeg.min.js');
+    } catch (e) {
+      throw e;
+    }
+    // UMD global may be exposed as FFmpegWASM or FFmpeg
+    const w: any = window as any;
+    const createFFmpeg =
+      w?.FFmpeg?.createFFmpeg ||
+      w?.FFmpegWASM?.createFFmpeg ||
+      w?.FFmpegWASM?.FFmpeg?.createFFmpeg;
+    if (createFFmpeg) {
+      const ff = createFFmpeg({
+        log: false,
+        corePath: '/api/ffmpeg/ffmpeg-core.js',
+      });
+      await ff.load();
+      ffmpegRef.current = ff;
+      return ff;
+    }
+
+    // Some UMD builds expose a class FFmpeg instead of createFFmpeg.
+    const FFmpegClass = w?.FFmpegWASM?.FFmpeg || w?.FFmpeg?.FFmpeg;
+    if (!FFmpegClass) throw new Error('FFmpeg UMD not available');
+    const inst = new FFmpegClass();
+    // Create a small adapter to match createFFmpeg API used by our code
+    const adapter = {
+      loaded: false,
+      isLoaded() { return this.loaded === true || inst.loaded === true; },
+      async load() {
+        await inst.load({
+          corePath: '/api/ffmpeg/ffmpeg-core.js',
+        });
+        this.loaded = true;
+      },
+      async run(...args: string[]) {
+        // exec expects an array of args
+        return await inst.exec(args);
+      },
+      FS(op: string, ...rest: any[]) {
+        switch (op) {
+          case 'writeFile':
+            return inst.writeFile(rest[0], rest[1]);
+          case 'readFile':
+            return inst.readFile(rest[0]);
+          case 'deleteFile':
+            return inst.deleteFile(rest[0]);
+          default:
+            throw new Error(`Unsupported FS op for UMD adapter: ${op}`);
+        }
+      },
+    } as any;
+    await adapter.load();
+    ffmpegRef.current = adapter;
+    return adapter;
+  };
+
+  // Produce a trimmed clip from a source URL (external-ingested video)
+  const renderTrimmedClip = async (srcUrl: string, start: number, end: number): Promise<File | null> => {
+    try {
+      const ff = await ensureFfmpeg();
+      const inName = 'input.mp4';
+      const outName = 'output.mp4';
+      // Fetch bytes and write to FS
+      const absoluteSrc = (() => { try { return new URL(srcUrl, window.location.origin).toString(); } catch { return srcUrl; } })();
+      const buf = await fetchWithTimeout(absoluteSrc, {}, 60000).then(r => r.arrayBuffer());
+      ff.FS('writeFile', inName, new Uint8Array(buf));
+      const ss = Math.max(0, start || 0);
+      const hasEnd = end && end > ss;
+      const args = [
+        '-y',
+        ...(ss ? ['-ss', String(ss)] : []),
+        '-i', inName,
+        ...(hasEnd ? ['-to', String(end)] : []),
+        // Encode to a baseline mp4 similar to worker output
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-profile:v', 'baseline',
+        '-level', '3.1',
+        '-c:a', 'aac',
+        '-movflags', '+faststart',
+        outName,
+      ];
+      await ff.run(...args);
+      const data = ff.FS('readFile', outName);
+      const blob = new Blob([data.buffer], { type: 'video/mp4' });
+      return new File([blob], 'edited.mp4', { type: 'video/mp4' });
+    } catch (e) {
+      console.warn('renderTrimmedClip failed; falling back to original', e);
+      showErrorToast('Failed to render trimmed clip; posting original video.');
+      return null;
+    }
+  };
+
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
   // Submit handler
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1068,6 +1224,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
             : (uploadedMediaUrl || mediaBaseUrlRef.current || (externalUrl.trim() || null) || (mediaPreview ? mediaPreview.replace(/\?t=\d+$/, '') : null)))
         : null;
 
+<<<<<<< HEAD
       // Debug logging for video posting
       if (mediaType === 'video') {
         console.log('[ComposerModal] Video posting debug:', {
@@ -1085,6 +1242,8 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
         });
       }
 
+=======
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
       const postData = {
         content: content.trim(),
         videoUrl: derivedVideoUrl,
@@ -1166,6 +1325,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
         }
         showSuccessToast('Post created successfully!');
         
+<<<<<<< HEAD
         // Automatically change to a new color scheme after successful post
         selectRandomColorScheme();
         
@@ -1173,6 +1333,12 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
         if (ingestJobId) {
           try {
             await fetch(`/api/ingest?jobId=${ingestJobId}`, {
+=======
+        // Link ingest job to post if this was an external video
+        if (ingestJobId) {
+          try {
+            await fetch(`/api/ingest/${ingestJobId}`, {
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
               method: 'PATCH',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ postId: newPost.id })
@@ -1431,6 +1597,27 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
 
               {/* Cloudflare Stream Preview (when cfUid available) */}
               {cfUidPreview && (
+<<<<<<< HEAD
+=======
+                <div className="mb-4 relative">
+                  <CFVideoPlayer uid={cfUidPreview} autoPlay muted loop controls />
+                  <div className="mt-2 text-xs text-gray-700">Cloudflare Stream preview</div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCfUidPreview(null);
+                      setMediaType(null);
+                    }}
+                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              )}
+
+              {/* Media Preview (local or worker-served MP4) */}
+              {mediaPreview && (
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
                 <div className="mb-4 relative">
                   <CFVideoPlayer uid={cfUidPreview} autoPlay muted loop controls />
                   <div className="mt-2 text-xs text-gray-700">Cloudflare Stream preview</div>
@@ -1471,16 +1658,75 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
                   {mediaPreview ? (
                     <div className="relative">
                       <video
+<<<<<<< HEAD
                         ref={previewVideoRef}
                         src={mediaPreview}
                         className="w-full max-h-96 rounded-xl object-cover"
+=======
+                        ref={(el) => { previewVideoRef.current = el; }}
+                        key={mediaPreview || 'video'}
+                        className="w-full max-h-64 object-cover rounded-xl"
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
                         controls
+                        preload="metadata"
+                        playsInline
+                        src={mediaPreview || ''}
                         onLoadedMetadata={(e) => {
+<<<<<<< HEAD
                           const v = e.currentTarget;
                           if (v && v.duration && !isNaN(v.duration) && v.duration > 0) {
                             setVideoDuration(v.duration);
                             setVideoTrimEnd(v.duration);
                             videoLoadRetryRef.current = 0;
+                          }
+                        }}
+                        onError={(e) => {
+                          try {
+                            const v = e.currentTarget as HTMLVideoElement;
+                            const err = (v as any)?.error as MediaError | undefined;
+                            console.error('Video failed to load', {
+                              src: v?.currentSrc || (mediaPreview ?? ''),
+                              readyState: v?.readyState,
+                              networkState: v?.networkState,
+                              errorCode: err?.code,
+                              errorMsg:
+                                err?.code === 1 ? 'ABORTED' :
+                                err?.code === 2 ? 'NETWORK' :
+                                err?.code === 3 ? 'DECODE' :
+                                err?.code === 4 ? 'SRC_NOT_SUPPORTED' : undefined,
+                            });
+
+                            // One-time retry: toggle cache-buster or strip it
+                            if (videoLoadRetryRef.current < 1) {
+                              videoLoadRetryRef.current += 1;
+                              const base = mediaBaseUrlRef.current || (mediaPreview ?? '');
+                              const toggle = base.includes('?') ? `${base}&t=${Date.now()}` : `${base}?t=${Date.now()}`;
+                              // Attempt retry without setState to avoid re-render loops
+                              v.src = toggle;
+                              try { v.load(); } catch {}
+                              return;
+                            }
+                            // Persistent failure: surface to user
+                            try { showErrorToast('Could not load video preview.'); } catch {}
+                          } catch {}
+=======
+                          const v = e.currentTarget as HTMLVideoElement;
+                          const d = v.duration || 0;
+                          console.log("[DEBUG] Video duration from metadata:", d, "seconds =", Math.floor(d/60), "minutes");
+                          console.log("[DEBUG] Video readyState:", v.readyState);
+                          console.log("[DEBUG] Video src length:", v.src.length);
+                          setVideoDuration(d);
+                          setVideoTrimStart(0);
+                          setVideoTrimEnd(d);
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
+                        }}
+                        onCanPlay={(e) => {
+                          // Fallback in case loadedmetadata didn't fire
+                          const v = e.currentTarget as HTMLVideoElement;
+                          if (!videoDuration || !isFinite(videoDuration)) {
+                            const d = v.duration || 0;
+                            setVideoDuration(d);
+                            if (!videoTrimEnd) setVideoTrimEnd(d);
                           }
                         }}
                         onError={(e) => {
@@ -1901,6 +2147,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
                       )}
 
                       {mediaTab === 'external' && (
+<<<<<<< HEAD
                         <div className="space-y-4">
                           <div className="text-sm text-gray-600">
                             Paste a URL to import video from YouTube, TikTok, Facebook, X or Reddit.
@@ -1934,6 +2181,85 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
                               className="w-full px-4 py-2 bg-orange-500 text-white rounded-lg text-sm hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {isIngestActive ? `Processing... ${ingestProgress || 0}%` : 'Import Video'}
+=======
+                        <div
+                          className="space-y-3"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              startExternalIngestion();
+                            }
+                          }}
+                        >
+                          <input
+                            type="url"
+                            inputMode="url"
+                            value={externalUrl}
+                            onChange={(e) => setExternalUrl(e.target.value)}
+                            placeholder="Transcribe or edit from Youtube, X, TikTok, FB etc"
+                            className="w-full rounded-lg border border-gray-300 px-3 py-2 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                            disabled={isIngestActive}
+                          />
+                          {/* TOS Acknowledgement */}
+                          <label className="flex items-start gap-2 text-sm text-gray-700 select-none">
+                            <input
+                              type="checkbox"
+                              checked={externalTosAccepted}
+                              onChange={(e) => setExternalTosAccepted(e.target.checked)}
+                              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                              disabled={isIngestActive}
+                            />
+                            <span>
+                              I confirm I have the right to use this content and agree to the
+                              {' '}<a href="/terms" target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:text-orange-700 underline">Terms of Service</a>.
+                            </span>
+                          </label>
+
+                          {/* Inline validation hint */}
+                          {!canAttachExternal && (
+                            <div className="text-xs text-gray-600">
+                              {isIngestActive
+                                ? 'An ingestion is currently in progress. Please wait for it to finish or cancel it.'
+                                : (!urlTrimmed
+                                  ? 'Paste a URL to continue.'
+                                  : (!isExternalUrlValid
+                                    ? 'Enter a valid URL (include domain). Adding https:// may help.'
+                                    : (!externalTosAccepted
+                                      ? 'Please accept the Terms of Service to proceed.'
+                                      : '')))}
+                            </div>
+                          )}
+
+                          {/* Ingestion progress */}
+                          {ingestJobId && (
+                            <div className="space-y-1">
+                              <div className="text-sm text-gray-700">
+                                {ingestStatus ? `Status: ${ingestStatus}` : 'Starting...'}
+                                {ingestProgress !== null && ` (${ingestProgress}%)`}
+                              </div>
+                              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
+                                <div
+                                  className="h-2 bg-orange-500 transition-all duration-300"
+                                  style={{ width: `${Math.max(0, Math.min(100, ingestProgress ?? 0))}%` }}
+                                />
+                              </div>
+                              {ingestError && <div className="text-sm text-red-600">{ingestError}</div>}
+                            </div>
+                          )}
+
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!canAttachExternal) return;
+                                startExternalIngestion();
+                              }}
+                              disabled={!canAttachExternal || (ingestJobId && isIngestActive)}
+                              aria-disabled={!canAttachExternal || (ingestJobId && isIngestActive)}
+                              className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              {ingestJobId ? 'Processing…' : 'Attach URL'}
+>>>>>>> b238a09 (Fix video persistence and CORS issues)
                             </button>
                             
                             {ingestError && (
