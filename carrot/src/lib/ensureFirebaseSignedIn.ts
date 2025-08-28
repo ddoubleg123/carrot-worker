@@ -26,8 +26,9 @@ export async function ensureFirebaseSignedIn() {
     console.log('[ensureFirebaseSignedIn] Got custom token, signing in to Firebase...');
     
     // Sign in with custom token
+    let userCredential;
     try {
-      const userCredential = await signInWithCustomToken(auth as Auth, token);
+      userCredential = await signInWithCustomToken(auth as Auth, token);
       console.log('[ensureFirebaseSignedIn] signInWithCustomToken completed, user:', userCredential.user.uid);
     } catch (e: any) {
       console.error('[ensureFirebaseSignedIn] signInWithCustomToken failed:', {

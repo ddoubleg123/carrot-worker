@@ -1,0 +1,67 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <style>
+      .wallpaper-text {
+        font-family: 'Inter', 'Montserrat', sans-serif;
+        font-weight: 600;
+        font-size: 20px;
+        letter-spacing: 0.1em;
+        fill: #FFFFFF;
+        fill-opacity: 0.16;
+        text-anchor: start;
+        dominant-baseline: middle;
+      }
+    </style>
+  </defs>
+  
+  <!-- Pre-rotated 45 degrees, brick-offset pattern -->
+  <g transform="rotate(45 512 512)">
+    <!-- Row 1 -->
+    <text x="50" y="100" class="wallpaper-text">PROTECT MY PRIVACY ⟡ F@$% ISRAEL ⟡ TAKE ACTION ⟡ OUR VOICES MATTER</text>
+    <text x="50" y="136" class="wallpaper-text">MAKE THE WORLD A BETTER PLACE ⟡ HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER</text>
+    
+    <!-- Row 2 (offset) -->
+    <text x="-100" y="172" class="wallpaper-text">THROW THE BUMS OUT ⟡ CREATE AI MEMES ⟡ PROTECT MY PRIVACY ⟡ F@$% ISRAEL</text>
+    <text x="-100" y="208" class="wallpaper-text">TAKE ACTION ⟡ OUR VOICES MATTER ⟡ MAKE THE WORLD A BETTER PLACE</text>
+    
+    <!-- Row 3 -->
+    <text x="50" y="244" class="wallpaper-text">HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER ⟡ THROW THE BUMS OUT ⟡ CREATE AI MEMES</text>
+    <text x="50" y="280" class="wallpaper-text">PROTECT MY PRIVACY ⟡ F@$% ISRAEL ⟡ TAKE ACTION ⟡ OUR VOICES MATTER</text>
+    
+    <!-- Row 4 (offset) -->
+    <text x="-100" y="316" class="wallpaper-text">MAKE THE WORLD A BETTER PLACE ⟡ HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER</text>
+    <text x="-100" y="352" class="wallpaper-text">THROW THE BUMS OUT ⟡ CREATE AI MEMES ⟡ PROTECT MY PRIVACY ⟡ F@$% ISRAEL</text>
+    
+    <!-- Row 5 -->
+    <text x="50" y="388" class="wallpaper-text">TAKE ACTION ⟡ OUR VOICES MATTER ⟡ MAKE THE WORLD A BETTER PLACE</text>
+    <text x="50" y="424" class="wallpaper-text">HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER ⟡ THROW THE BUMS OUT ⟡ CREATE AI MEMES</text>
+    
+    <!-- Row 6 (offset) -->
+    <text x="-100" y="460" class="wallpaper-text">PROTECT MY PRIVACY ⟡ F@$% ISRAEL ⟡ TAKE ACTION ⟡ OUR VOICES MATTER</text>
+    <text x="-100" y="496" class="wallpaper-text">MAKE THE WORLD A BETTER PLACE ⟡ HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER</text>
+    
+    <!-- Row 7 -->
+    <text x="50" y="532" class="wallpaper-text">THROW THE BUMS OUT ⟡ CREATE AI MEMES ⟡ PROTECT MY PRIVACY ⟡ F@$% ISRAEL</text>
+    <text x="50" y="568" class="wallpaper-text">TAKE ACTION ⟡ OUR VOICES MATTER ⟡ MAKE THE WORLD A BETTER PLACE</text>
+    
+    <!-- Row 8 (offset) -->
+    <text x="-100" y="604" class="wallpaper-text">HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER ⟡ THROW THE BUMS OUT ⟡ CREATE AI MEMES</text>
+    <text x="-100" y="640" class="wallpaper-text">PROTECT MY PRIVACY ⟡ F@$% ISRAEL ⟡ TAKE ACTION ⟡ OUR VOICES MATTER</text>
+    
+    <!-- Row 9 -->
+    <text x="50" y="676" class="wallpaper-text">MAKE THE WORLD A BETTER PLACE ⟡ HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER</text>
+    <text x="50" y="712" class="wallpaper-text">THROW THE BUMS OUT ⟡ CREATE AI MEMES ⟡ PROTECT MY PRIVACY ⟡ F@$% ISRAEL</text>
+    
+    <!-- Row 10 (offset) -->
+    <text x="-100" y="748" class="wallpaper-text">TAKE ACTION ⟡ OUR VOICES MATTER ⟡ MAKE THE WORLD A BETTER PLACE</text>
+    <text x="-100" y="784" class="wallpaper-text">HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER ⟡ THROW THE BUMS OUT ⟡ CREATE AI MEMES</text>
+    
+    <!-- Row 11 -->
+    <text x="50" y="820" class="wallpaper-text">PROTECT MY PRIVACY ⟡ F@$% ISRAEL ⟡ TAKE ACTION ⟡ OUR VOICES MATTER</text>
+    <text x="50" y="856" class="wallpaper-text">MAKE THE WORLD A BETTER PLACE ⟡ HOLD THEM ACCOUNTABLE ⟡ FIGHT THE POWER</text>
+    
+    <!-- Row 12 (offset) -->
+    <text x="-100" y="892" class="wallpaper-text">THROW THE BUMS OUT ⟡ CREATE AI MEMES ⟡ PROTECT MY PRIVACY ⟡ F@$% ISRAEL</text>
+    <text x="-100" y="928" class="wallpaper-text">TAKE ACTION ⟡ OUR VOICES MATTER ⟡ MAKE THE WORLD A BETTER PLACE</text>
+  </g>
+</svg>

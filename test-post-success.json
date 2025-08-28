@@ -1,0 +1,8 @@
+{
+  "success": true,
+  "userId": "test-user-001",
+  "postId": "test-video-post-001",
+  "videoUrl": "https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0-default-rtdb.firebasestorage.app/o/videos%2Ftest-video.mp4?alt=media",
+  "transcriptionStatus": "pending",
+  "createdAt": "2025-08-27T20:25:53.293Z"
+}

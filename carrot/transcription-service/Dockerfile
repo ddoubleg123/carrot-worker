@@ -15,12 +15,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download Vosk model (small English model ~50MB)
-RUN mkdir -p /app/models && \
-    cd /app/models && \
-    wget https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip && \
-    unzip vosk-model-small-en-us-0.15.zip && \
-    rm vosk-model-small-en-us-0.15.zip
+# Create models directory (model will be downloaded at runtime)
+RUN mkdir -p /app/models
 
 # Copy application code
 COPY . .

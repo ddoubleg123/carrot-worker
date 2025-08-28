@@ -1,0 +1,3 @@
+{
+  "error": "\nInvalid `prisma.post.create()` invocation in\nC:\\Users\\danie\\CascadeProjects\\windsurf-project\\create-test-post.js:9:40\n\n  6 \n  7 try {\n  8   // Create a test post with a Firebase video URL\n→ 9   const testPost = await prisma.post.create(\nForeign key constraint violated on the foreign key"
+}

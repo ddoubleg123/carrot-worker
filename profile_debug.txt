@@ -1,0 +1,12 @@
+=== PROFILE PHOTO DEBUG ===
+Total users: 1
+
+--- User 114925503624947485560 ---
+Email: danielgouldman@gmail.com
+Username: daniel
+ProfilePhoto exists: true
+ProfilePhoto length: 265 chars
+ProfilePhoto type: URL
+ProfilePhoto preview: https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0.firebasestorage.app/o/users%2F...
+
+=== POST API DATA ===

@@ -6,6 +6,21 @@ import 'react-international-phone/style.css';
 import '../styles/phone-input-override.css';
 import { cn } from '../lib/utils';
 
+// Convert ISO country code to flag emoji with Israel->Palestine override
+const getFlagEmoji = (code?: string) => {
+  if (!code) return '';
+  const trimmed = code.trim().toLowerCase();
+  
+  // Apply override: Israel -> Palestine
+  const effectiveCode = trimmed === 'il' ? 'ps' : trimmed;
+  
+  if (effectiveCode.length !== 2) return '';
+  const base = 0x1F1E6 - 65; // Regional indicator base
+  const first = base + (effectiveCode.charCodeAt(0) - 97);
+  const second = base + (effectiveCode.charCodeAt(1) - 97);
+  return String.fromCodePoint(first) + String.fromCodePoint(second);
+};
+
 interface CustomPhoneInputProps {
   value: string;
   onChange: (value: string) => void;

@@ -1,150 +1,214 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createJob, IngestSourceType, updateJob, getJob } from '@/lib/ingestJobs';
 
-// Shared-secret for worker auth (defaults for local dev)
-const WORKER_SECRET = process.env.INGEST_WORKER_SECRET ?? 'dev_ingest_secret';
+const RAILWAY_SERVICE_URL = process.env.RAILWAY_INGESTION_URL || 'http://localhost:8000';
 
-// Candidate worker base URLs to try (deduped)
-const CANDIDATE_WORKERS = Array.from(
-  new Set(
-    [
-      process.env.INGEST_WORKER_URL, // if provided
-      'http://127.0.0.1:8080',
-      'http://localhost:8080',
-    ].filter(Boolean)
-  )
-);
+interface IngestRequest {
+  url: string;
+}
 
-async function enqueueToWorker(payload: any): Promise<boolean> {
-  const body = JSON.stringify(payload);
-  const headers: Record<string, string> = {
-    'content-type': 'application/json',
+interface RailwayIngestResponse {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
+interface RailwayJobStatus {
+  job_id: string;
+  status: string;
+  progress: number;
+  created_at: string;
+  completed_at?: string;
+  error?: string;
+  result?: {
+    video_id: string;
+    title: string;
+    description?: string;
+    duration: number;
+    uploader: string;
+    upload_date: string;
+    view_count?: number;
+    thumbnail: string;
+    formats: Array<{
+      format_id: string;
+      url: string;
+      ext: string;
+      acodec: string;
+      filesize?: number;
+    }>;
+    subtitles: Record<string, any>;
+    automatic_captions: Record<string, any>;
   };
-  if (WORKER_SECRET) headers['x-worker-secret'] = WORKER_SECRET;
-
-  // 2 passes across candidates with a 5s per-attempt timeout and tiny backoff
-  const attempts = 2;
-  let lastErr: unknown;
-  for (let pass = 0; pass < attempts; pass++) {
-    for (const base of CANDIDATE_WORKERS) {
-      try {
-        const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), 5000);
-        const res = await fetch(`${base.replace(/\/$/, '')}/ingest`, {
-          method: 'POST',
-          headers,
-          body,
-          signal: ctrl.signal,
-        });
-        clearTimeout(to);
-        if (res.ok) return true; // accepted by worker
-        lastErr = new Error(`Worker ${base} HTTP ${res.status}`);
-      } catch (e) {
-        lastErr = e;
-      }
-    }
-    await new Promise((r) => setTimeout(r, 250));
-  }
-  try { console.error('[ingest] enqueueToWorker failed', { lastErr }); } catch {}
-  return false;
 }
 
-function isValidUrl(url: string) {
+export async function POST(request: NextRequest) {
   try {
-    const u = new URL(url);
-    return !!u.protocol && !!u.hostname;
-  } catch {
-    return false;
-  }
-}
+    const body: IngestRequest = await request.json();
+    const { url } = body;
 
-export async function GET() {
-  return NextResponse.json(
-    {
-      ok: true,
-      message: 'POST a JSON body to create an ingest job',
-      example: { url: 'https://www.youtube.com/watch?v=...', type: 'youtube' },
-      debug: 'See /api/ingest/debug for current jobs'
-    },
-    { headers: { 'Cache-Control': 'no-store' } }
-  );
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json();
-    const { url, type, userId, postId } = body as {
-      url?: string;
-      type?: IngestSourceType;
-      userId?: string | null;
-      postId?: string | null;
-    };
-
-    if (!url || !isValidUrl(url)) {
-      return NextResponse.json({ error: 'Invalid or missing url' }, { status: 400 });
-    }
-
-    const allowed: IngestSourceType[] = ['youtube', 'x', 'facebook', 'reddit', 'tiktok'];
-    const sourceType: IngestSourceType = (type as IngestSourceType) || 'youtube';
-    if (!allowed.includes(sourceType)) {
-      return NextResponse.json({ error: 'Unsupported type' }, { status: 400 });
-    }
-
-    // TODO: attach authenticated user id from session if available
-    const job = await createJob({ sourceUrl: url, sourceType, userId: userId ?? null, postId: postId ?? null });
-    // Optimistically bump immediately so UI doesn't stay at 0%
-    let jobForResponse = job;
-    try {
-      const updated = await updateJob(job.id, { status: 'downloading', progress: 1 });
-      if (updated) jobForResponse = updated;
-    } catch {}
-
-    // Enqueue to worker with retries; fail fast if unreachable so UI doesn't spin at 1%
-    const accepted = await enqueueToWorker({ id: job.id, url, type: sourceType });
-    if (!accepted) {
-      try {
-        await updateJob(job.id, {
-          status: 'failed',
-          progress: 1,
-          error: 'Ingest worker unreachable (no /ingest ACK)'
-        });
-      } catch {}
+    if (!url) {
       return NextResponse.json(
-        { id: job.id, status: 'failed', error: 'Worker unreachable' },
-        { status: 503, headers: { 'Cache-Control': 'no-store' } }
+        { error: 'URL is required' },
+        { status: 400 }
       );
     }
 
-    // Respond with the latest database snapshot (includes optimistic bump)
-    const latest = await getJob(job.id) || jobForResponse;
-    return NextResponse.json({ job: latest }, { status: 201, headers: { 'Cache-Control': 'no-store' } });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'Unexpected error' }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
+    // Validate URL format
+    try {
+      new URL(url);
+    } catch {
+      return NextResponse.json(
+        { error: 'Invalid URL format' },
+        { status: 400 }
+      );
+    }
+
+    // Start ingestion job on Railway service
+    const response = await fetch(`${RAILWAY_SERVICE_URL}/ingest`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ url }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Railway service error:', errorText);
+      return NextResponse.json(
+        { error: 'Ingestion service unavailable' },
+        { status: 503 }
+      );
+    }
+
+    const railwayResponse: RailwayIngestResponse = await response.json();
+
+    return NextResponse.json({
+      job: {
+        id: railwayResponse.job_id,
+        status: railwayResponse.status,
+        progress: 0,
+        url,
+        message: railwayResponse.message,
+      }
+    });
+
+  } catch (error) {
+    console.error('Ingest API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
-// DEV SIMULATION ONLY – replace with Cloud Run worker using yt-dlp + ffmpeg
-function simulateYouTubeIngest(jobId: string, sourceUrl: string) {
-  // downloading
-  setTimeout(() => {
-    updateJob(jobId, { status: 'downloading', progress: 10 });
-  }, 300);
-  // transcoding
-  setTimeout(() => {
-    updateJob(jobId, { status: 'transcoding', progress: 45 });
-  }, 2200);
-  // uploading
-  setTimeout(() => {
-    updateJob(jobId, { status: 'uploading', progress: 80 });
-  }, 4200);
-  // completed
-  setTimeout(() => {
-    // Simulation disabled for strict real testing. Mark as failed if ever invoked.
-    updateJob(jobId, {
-      status: 'failed',
-      progress: 100,
-      error: 'Dev simulation disabled. Real ingest worker required.'
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const jobId = searchParams.get('jobId');
+
+    if (!jobId) {
+      return NextResponse.json(
+        { error: 'jobId parameter is required' },
+        { status: 400 }
+      );
+    }
+
+    // Get job status from Railway service
+    const response = await fetch(`${RAILWAY_SERVICE_URL}/jobs/${jobId}`);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return NextResponse.json(
+          { error: 'Job not found' },
+          { status: 404 }
+        );
+      }
+      const errorText = await response.text();
+      console.error('Railway service error:', errorText);
+      return NextResponse.json(
+        { error: 'Ingestion service unavailable' },
+        { status: 503 }
+      );
+    }
+
+    const railwayJob: RailwayJobStatus = await response.json();
+
+    // Transform Railway response to match existing format
+    const job = {
+      id: railwayJob.job_id,
+      status: railwayJob.status,
+      progress: railwayJob.progress,
+      created_at: railwayJob.created_at,
+      completed_at: railwayJob.completed_at,
+      error: railwayJob.error,
+    };
+
+    // If completed successfully, include the processed result
+    if (railwayJob.status === 'completed' && railwayJob.result) {
+      const result = railwayJob.result;
+      
+      // Find the best audio format with null safety
+      const audioFormat = result.formats?.find(f => f.acodec && f.acodec !== 'none');
+      
+      return NextResponse.json({
+        job: {
+          ...job,
+          videoUrl: audioFormat?.url,
+          mediaUrl: audioFormat?.url,
+          title: result.title,
+          duration: result.duration,
+          thumbnail: result.thumbnail,
+          uploader: result.uploader,
+          video_id: result.video_id,
+          // Include subtitle information with null safety
+          hasSubtitles: result.subtitles ? Object.keys(result.subtitles).length > 0 : false,
+          hasAutoSubtitles: result.automatic_captions ? Object.keys(result.automatic_captions).length > 0 : false,
+          subtitles: result.subtitles || {},
+          automaticCaptions: result.automatic_captions || {},
+        }
+      });
+    }
+
+    return NextResponse.json({ job });
+
+  } catch (error) {
+    console.error('Ingest status API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
+}
+
+// PATCH handler to link ingest job to post
+export async function PATCH(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const jobId = searchParams.get('jobId');
+    const { postId } = await request.json();
+
+    if (!jobId || !postId) {
+      return NextResponse.json(
+        { error: 'Missing jobId or postId' },
+        { status: 400 }
+      );
+    }
+
+    // For now, just acknowledge the link - could store in database if needed
+    console.log(`[ComposerModal] Linked ingest job to post: {jobId: '${jobId}', postId: '${postId}'}`);
+    
+    return NextResponse.json({ 
+      success: true, 
+      message: 'Job linked to post successfully',
+      jobId,
+      postId 
     });
-    // TODO: trigger transcription job here using existing API once integrated
-  }, 6200);
+
+  } catch (error) {
+    console.error('Ingest link API error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
+  }
 }

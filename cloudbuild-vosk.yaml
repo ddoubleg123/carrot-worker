@@ -1,0 +1,50 @@
+# Standalone Cloud Build for Vosk transcription service
+# This forces Docker build instead of using buildpacks
+steps:
+  # Build the container image using Docker
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/vosk-transcription:$COMMIT_SHA'
+      - '-f'
+      - 'carrot/transcription-service/Dockerfile'
+      - 'carrot/transcription-service'
+  
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/vosk-transcription:$COMMIT_SHA']
+  
+  # Deploy container image to Cloud Run with always-on configuration
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'vosk-transcription'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/vosk-transcription:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '900'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '10'
+      - '--set-env-vars'
+      - 'MODEL_PATH=/app/models/vosk-model-small-en-us-0.15'
+
+images:
+  - 'gcr.io/$PROJECT_ID/vosk-transcription:$COMMIT_SHA'
+
+substitutions:
+  _SERVICE_NAME: 'vosk-transcription'
+  _REGION: 'us-central1'

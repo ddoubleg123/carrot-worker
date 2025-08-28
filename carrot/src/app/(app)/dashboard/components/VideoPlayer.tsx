@@ -220,9 +220,29 @@ export default function VideoPlayer({ videoUrl, thumbnailUrl, postId, initialTra
     try {
       // Ensure muted stays true across source swaps for autoplay compliance
       el.muted = true;
+      
+      // Fix Firebase Storage URLs by adding proper auth parameters
+      if (videoUrl.includes('firebasestorage.googleapis.com') && !videoUrl.includes('alt=media')) {
+        const authUrl = `${videoUrl}?alt=media`;
+        el.src = authUrl;
+        console.log('🎬 Using Firebase Storage auth URL:', authUrl);
+      }
+      
       el.load();
+      
+      // Force autoplay attempt after load for older posts
+      const forceAutoplay = () => {
+        if (el && isInView) {
+          safePlay();
+        }
+      };
+      
+      // Try autoplay after metadata loads
+      el.addEventListener('loadedmetadata', forceAutoplay, { once: true });
+      el.addEventListener('canplay', forceAutoplay, { once: true });
+      
     } catch {}
-  }, [videoUrl]);
+  }, [videoUrl, isInView]);
 
   const handleError = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
     const video = e.target as HTMLVideoElement;
@@ -300,7 +320,7 @@ export default function VideoPlayer({ videoUrl, thumbnailUrl, postId, initialTra
           preload="auto"
           crossOrigin="anonymous"
           poster={thumbnailUrl || undefined}
-          src={videoUrl}
+          src={videoUrl.includes('firebasestorage.googleapis.com') && !videoUrl.includes('alt=media') ? `${videoUrl}?alt=media` : videoUrl}
           style={{ 
             width: '100%',
             maxWidth: '100%',
@@ -326,19 +346,31 @@ export default function VideoPlayer({ videoUrl, thumbnailUrl, postId, initialTra
             if (videoRef.current && isInView) {
               safePlay();
             }
+            // Force autoplay for older posts that might not trigger intersection observer
+            setTimeout(() => {
+              if (videoRef.current && isInView) {
+                safePlay();
+              }
+            }, 100);
           }}
           onCanPlay={() => {
             if (videoRef.current && isInView) {
               safePlay();
             }
+            // Additional autoplay attempt for older posts
+            setTimeout(() => {
+              if (videoRef.current && isInView) {
+                safePlay();
+              }
+            }, 200);
           }}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
         >
           {/* Provide explicit source with MIME type hint to improve decoding compatibility */}
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-          {/* Omit explicit type so the browser can infer; Firebase URLs may carry codecs */}
-          <source src={videoUrl} />
+          {/* Add auth parameters for Firebase Storage URLs */}
+          <source src={videoUrl.includes('firebasestorage.googleapis.com') && !videoUrl.includes('alt=media') ? `${videoUrl}?alt=media` : videoUrl} type={getMimeType(videoUrl)} />
         </video>
         
         {/* Upload Progress Overlay - Only show during actual upload, not after completion */}

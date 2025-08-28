@@ -1,0 +1,4 @@
+{
+  "error": "Service error: 500",
+  "details": "{\"error\":\"404 Client Error: Not Found for url: https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0-default-rtdb.firebasestorage.app/o/videos%2Ftest-video.mp4?alt=media\",\"postId\":\"test-video-post-001\",\"status\":\"failed\",\"success\":false,\"transcription\":\"Transcription failed: 404 Client Error: Not Found for url: https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0-default-rtdb.firebasestorage.app/o/videos%2Ftest-video.mp4?alt=media\"}\n"
+}

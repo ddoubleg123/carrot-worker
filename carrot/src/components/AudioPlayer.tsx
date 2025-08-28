@@ -293,10 +293,14 @@ export default function AudioPlayer({
     if (audioUrl && audioRef.current) {
       console.log('🎵 Audio URL changed, reloading:', audioUrl);
       
-      // Test if Firebase Storage URL is accessible
+      // Test if Firebase Storage URL is accessible and add auth token if needed
       if (audioUrl.includes('firebasestorage.googleapis.com')) {
         console.log('🎵 Testing Firebase Storage URL accessibility...');
-        fetch(audioUrl, { method: 'HEAD' })
+        
+        // Try to add auth token for Firebase Storage access
+        const testUrl = audioUrl.includes('?') ? audioUrl : `${audioUrl}?alt=media`;
+        
+        fetch(testUrl, { method: 'HEAD' })
           .then(response => {
             console.log('🎵 Firebase Storage URL test:', {
               status: response.status,
@@ -304,10 +308,25 @@ export default function AudioPlayer({
               contentLength: response.headers.get('content-length'),
               accessible: response.ok
             });
+            
+            // If URL is not accessible, try with auth token
+            if (!response.ok && response.status === 403) {
+              console.log('🎵 Firebase Storage 403, trying with auth token...');
+              // Update the audio src with proper auth parameters
+              if (audioRef.current) {
+                audioRef.current.src = testUrl;
+                audioRef.current.load();
+              }
+            }
           })
           .catch(error => {
-            // Use warn to avoid Next.js / next-auth error interception noise
-            console.warn('🎵 Firebase Storage URL not accessible (non-fatal):', error);
+            console.warn('🎵 Firebase Storage URL not accessible, trying fallback:', error);
+            // Try with auth token as fallback
+            if (audioRef.current && !audioUrl.includes('alt=media')) {
+              const fallbackUrl = `${audioUrl}?alt=media`;
+              audioRef.current.src = fallbackUrl;
+              audioRef.current.load();
+            }
           });
       }
       
@@ -444,14 +463,24 @@ export default function AudioPlayer({
     <div className={`w-full max-w-full min-w-0 bg-white/90 backdrop-blur-sm rounded-xl p-4 shadow-lg ${className}`}>
       <audio 
         ref={audioRef} 
-        src={audioUrl} 
+        src={audioUrl.includes('firebasestorage.googleapis.com') && !audioUrl.includes('alt=media') ? `${audioUrl}?alt=media` : audioUrl}
         preload="metadata"
+        crossOrigin="anonymous"
         onLoadStart={() => console.log('🎵 Audio load started:', audioUrl)}
         onCanPlay={() => console.log('🎵 Audio can play:', audioUrl)}
         onLoadedMetadata={() => console.log('🎵 Audio metadata loaded:', { url: audioUrl, duration: audioRef.current?.duration })}
         onLoadedData={() => console.log('🎵 Audio data loaded:', { url: audioUrl, duration: audioRef.current?.duration })}
         // Use log to avoid Next.js / next-auth error interception for harmless media errors
-        onError={(e) => console.log('🎵 Audio element error (non-fatal):', { url: audioUrl, error: e.currentTarget.error, networkState: e.currentTarget.networkState, readyState: e.currentTarget.readyState })}
+        onError={(e) => {
+          console.log('🎵 Audio element error (non-fatal):', { url: audioUrl, error: e.currentTarget.error, networkState: e.currentTarget.networkState, readyState: e.currentTarget.readyState });
+          // Try fallback URL for Firebase Storage
+          if (audioUrl.includes('firebasestorage.googleapis.com') && !audioUrl.includes('alt=media')) {
+            const fallbackUrl = `${audioUrl}?alt=media`;
+            console.log('🎵 Trying fallback URL:', fallbackUrl);
+            e.currentTarget.src = fallbackUrl;
+            e.currentTarget.load();
+          }
+        }}
       />
       
       {/* Waveform Visualization Placeholder (optional) */}

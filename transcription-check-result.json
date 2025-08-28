@@ -1,0 +1,13 @@
+{
+  "postExists": false,
+  "postId": null,
+  "transcriptionStatus": null,
+  "hasAudioTranscription": false,
+  "audioTranscriptionLength": 0,
+  "audioTranscriptionText": null,
+  "hasVideo": false,
+  "hasVideoUrl": false,
+  "videoUrlPreview": null,
+  "createdAt": null,
+  "updatedAt": null
+}

@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { signIn } from 'next-auth/react';
+import '../../styles/carrot-wallpaper.css';
 
 
 
@@ -66,7 +67,7 @@ function LoginForm({ callbackUrl, denied }: { callbackUrl: string; denied: strin
       // Use proper OAuth flow with redirect: true (default)
       // This will redirect to Google OAuth, then back to our callback
       await signIn('google', {
-        callbackUrl: '/onboarding'
+        callbackUrl: callbackUrl || '/home'
       });
       
       // Note: This code won't execute because signIn() redirects the page
@@ -101,6 +102,12 @@ function LoginForm({ callbackUrl, denied }: { callbackUrl: string; denied: strin
 
   return (
     <div className="min-h-screen flex items-center justify-center relative overflow-hidden">
+      {/* Word Wallpaper Background */}
+      <div className="carrot-wallpaper" />
+      
+      {/* Soft Veil Under Modal */}
+      <div className="carrot-wallpaper-veil" />
+      
       {/* Animated Gradient Background */}
       <div 
         className="fixed inset-0 w-screen h-screen z-0 animate-gradient-x"
@@ -129,7 +136,7 @@ function LoginForm({ callbackUrl, denied }: { callbackUrl: string; denied: strin
       `}</style>
       
       {/* Login content */}
-      <div className="w-full max-w-md relative z-20">
+      <div className="w-full max-w-md relative z-20 carrot-modal-clearzone">
         {/* Logo */}
         <div className="flex justify-center mb-6">
           <div className="flex items-center justify-center">

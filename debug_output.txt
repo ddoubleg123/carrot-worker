@@ -1,0 +1,11 @@
+=== SESSION vs DATABASE DEBUG ===
+Total users in database: 1
+
+--- User 114925503624947485560 ---
+Email: danielgouldman@gmail.com
+Username: daniel
+Name: NULL
+ProfilePhoto: HAS DATA
+OAuth Image: NULL
+
+=== API POST DATA ===

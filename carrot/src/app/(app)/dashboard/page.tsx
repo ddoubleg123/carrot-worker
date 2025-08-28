@@ -34,6 +34,9 @@ async function getCommitments(): Promise<CommitmentCardProps[]> {
     
     const posts = await response.json();
     
+    // Get session to use profile photo from session data like composer does
+    const session = await auth();
+    
     // Transform database posts to CommitmentCardProps format
     return posts.map((post: any) => ({
       id: post.id,
@@ -43,7 +46,7 @@ async function getCommitments(): Promise<CommitmentCardProps[]> {
       author: {
         name: '', // Remove name display per user request
         username: post.User?.username || 'daniel', // FIXED: Use actual username from database, not name
-        avatar: post.User?.profilePhoto || post.User?.image || 'https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0.firebasestorage.app/o/users%2Fcmdm0m8pl00004sbcjr0i6vjg%2Fstaged%2Fe137a64b-9b76-4127-a4c0-5fb2cd4c3176%2F9e257b08-4682-4ab1-839a-5ab2298e3084.png?alt=media&token=a06d95fc-1656-42af-a36f-b9a3349d4239',
+        avatar: post.User?.profilePhoto || (session?.user as any)?.profilePhoto || (session?.user as any)?.image || '/avatar-placeholder.svg',
         flag: '🇺🇸',
         id: post.userId, // Add the author ID for ownership comparison
       },

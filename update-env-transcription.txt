@@ -1,0 +1,8 @@
+Add this line to your carrot/.env.local file:
+
+TRANSCRIPTION_SERVICE_URL=https://vosk-transcription-lnkmm5qvx3a-uc.a.run.app
+
+If that URL doesn't work, try:
+TRANSCRIPTION_SERVICE_URL=https://vosk-transcription-466315-uc.a.run.app
+
+Or check Google Cloud Console for the actual deployed service URL.

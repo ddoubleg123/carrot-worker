@@ -18,13 +18,17 @@ export async function logoutClient() {
       console.warn('[logoutClient] Firebase signOut failed (non-fatal):', e);
     }
 
-    // Trigger NextAuth sign out with redirect handled for us
-    await nextAuthSignOut({ callbackUrl: '/login' });
-  } catch (err) {
-    console.error('[logoutClient] Unexpected error during logout:', err);
-    // Hard fallback if NextAuth fails to redirect
-    if (typeof window !== 'undefined') {
-      window.location.href = '/login';
-    }
+    // Sign out of NextAuth and redirect
+    await nextAuthSignOut({
+      callbackUrl: '/login',
+      redirect: true
+    });
+  } catch (error) {
+    console.error('[logoutClient] Error during sign out:', error);
+    // Even if there's an error, redirect to login
+    window.location.href = '/login';
   }
 }
+
+// Add default export for backward compatibility
+export default logoutClient;

@@ -102,16 +102,15 @@ export async function POST(req: NextRequest) {
         const mediaType = effectiveAudioUrl ? 'audio' : 'video';
         console.log(`🎵 Triggering transcription for post ${post.id} with ${mediaType} URL: ${mediaUrl.substring(0, 80)}...`);
         
-        // Use fire-and-forget approach - don't wait for response
-        fetch(`http://localhost:3005/api/transcribe`, {
+        // Use fire-and-forget approach - trigger transcription via internal API
+        fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3005'}/api/audio/trigger-transcription`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
             postId: post.id,
-            audioUrl: effectiveAudioUrl || null,
-            videoUrl: effectiveVideoUrl || null,
+            audioUrl: effectiveAudioUrl || effectiveVideoUrl,
           }),
         }).then(async (transcriptionResponse) => {
           if (transcriptionResponse.ok) {

@@ -1,0 +1,131 @@
+/* Carrot Login Word-Wallpaper Styles */
+
+:root {
+  --carrot-wallpaper-opacity-light: 0.12;
+  --carrot-wallpaper-opacity-dark: 0.16;
+  --carrot-wallpaper-speed: 120s;
+  --carrot-wallpaper-parallax: 2%;
+}
+
+.carrot-wallpaper {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+  
+  /* Light theme by default */
+  background-image: url('/carrot-wallpaper-light.svg');
+  background-repeat: repeat;
+  background-size: 512px 512px;
+  
+  /* Slow drift animation */
+  animation: carrot-wallpaper-drift var(--carrot-wallpaper-speed) linear infinite;
+  
+  /* Parallax effect */
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/* Dark theme variant */
+@media (prefers-color-scheme: dark) {
+  .carrot-wallpaper {
+    background-image: url('/carrot-wallpaper-dark.svg');
+  }
+}
+
+/* Explicit dark theme class */
+.dark .carrot-wallpaper {
+  background-image: url('/carrot-wallpaper-dark.svg');
+}
+
+/* Drift animation */
+@keyframes carrot-wallpaper-drift {
+  0% {
+    transform: translate(0, 0);
+  }
+  25% {
+    transform: translate(var(--carrot-wallpaper-parallax), calc(var(--carrot-wallpaper-parallax) * -0.5));
+  }
+  50% {
+    transform: translate(0, calc(var(--carrot-wallpaper-parallax) * -1));
+  }
+  75% {
+    transform: translate(calc(var(--carrot-wallpaper-parallax) * -1), calc(var(--carrot-wallpaper-parallax) * -0.5));
+  }
+  100% {
+    transform: translate(0, 0);
+  }
+}
+
+/* Soft veil under modal */
+.carrot-wallpaper-veil {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.08);
+  pointer-events: none;
+  z-index: 2;
+}
+
+@media (prefers-color-scheme: dark) {
+  .carrot-wallpaper-veil {
+    background: rgba(0, 0, 0, 0.06);
+  }
+}
+
+.dark .carrot-wallpaper-veil {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* Responsive behavior */
+@media (max-width: 768px) {
+  .carrot-wallpaper {
+    background-size: 384px 384px; /* Reduce density 25% */
+    --carrot-wallpaper-parallax: 1.5%;
+  }
+}
+
+@media (max-width: 480px) {
+  .carrot-wallpaper {
+    background-size: 320px 320px; /* Reduce density 37.5% */
+    --carrot-wallpaper-parallax: 1%;
+  }
+}
+
+/* Hide on very short screens */
+@media (max-height: 560px) {
+  .carrot-wallpaper {
+    display: none;
+  }
+}
+
+/* Respect reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .carrot-wallpaper {
+    animation: none;
+    transform: none;
+  }
+}
+
+/* Clear zone around modal - utility class */
+.carrot-modal-clearzone {
+  margin: 24px;
+}
+
+@media (min-width: 768px) {
+  .carrot-modal-clearzone {
+    margin: 32px;
+  }
+}
+
+/* One-line example usage:
+.login-background {
+  background: url('/carrot-wallpaper-light.svg') repeat;
+  background-size: 512px 512px;
+}
+*/

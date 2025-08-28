@@ -1,0 +1,64 @@
+=== USER DATA DEBUG ===
+Total users: 1
+
+--- User 114925503624947485560 ---
+Email: danielgouldman@gmail.com
+Username: daniel
+Name: null
+ProfilePhoto: YES
+OAuth Image: NO
+ProfilePhoto (first 50 chars): https://firebasestorage.googleapis.com/v0/b/involu...
+
+=== RECENT POSTS ===
+Database query error: PrismaClientValidationError: 
+Invalid `prisma.user.findMany()` invocation in
+c:\Users\danie\CascadeProjects\windsurf-project\query-daniel-user.js:56:44
+
+  53 });
+  54 
+  55 // Also check for any user with email containing 'daniel'
+→ 56 const usersByEmail = await prisma.user.findMany({
+       where: {
+         email: {
+           contains: "daniel"
+         }
+       },
+       select: {
+         id: true,
+         email: true,
+         username: true,
+         profilePhoto: true,
+         isOnboarded: true,
+         createdAt: true,
+         ~~~~~~~~~
+     ?   name?: true,
+     ?   emailVerified?: true,
+     ?   image?: true,
+     ?   firstName?: true,
+     ?   lastName?: true,
+     ?   phone?: true,
+     ?   country?: true,
+     ?   postalCode?: true,
+     ?   metadata?: true,
+     ?   interests?: true,
+     ?   tosAcceptedAt?: true,
+     ?   privacyAcceptedAt?: true,
+     ?   tosVersion?: true,
+     ?   privacyVersion?: true,
+     ?   onboardingAnswers?: true,
+     ?   accounts?: true,
+     ?   posts?: true,
+     ?   sessions?: true,
+     ?   _count?: true
+       }
+     })
+
+Unknown field `createdAt` for select statement on model `User`. Available options are marked with ?.
+    at Dn (c:\Users\danie\node_modules\@prisma\client\runtime\library.js:29:1363)
+    at ri.handleRequestError (c:\Users\danie\node_modules\@prisma\client\runtime\library.js:121:7102)
+    at ri.handleAndLogRequestError (c:\Users\danie\node_modules\@prisma\client\runtime\library.js:121:6784)
+    at ri.request (c:\Users\danie\node_modules\@prisma\client\runtime\library.js:121:6491)
+    at async l (c:\Users\danie\node_modules\@prisma\client\runtime\library.js:130:9812)
+    at async queryDanielUser (c:\Users\danie\CascadeProjects\windsurf-project\query-daniel-user.js:56:26) {
+  clientVersion: '6.12.0'
+}

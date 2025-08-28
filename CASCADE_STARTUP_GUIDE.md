@@ -150,7 +150,7 @@ Use these steps to verify Render is using the intended GHCR image and to interpr
 2. __Deploy events__
    - Events → open the Deploy event. Prefer to see: “Pulling image ghcr.io/...”. If it’s missing, Render may be using a cached digest. Not necessarily a problem.
 
-3. __/debug fields (from `carrot-worker/src/index.js`)__
+3. __/debug fields (from `carrot-worker/src/index.js`__
    - `deployment.commit` now includes:
      - `commit`: taken from `RELEASE_SHA || GITHUB_SHA || RENDER_GIT_COMMIT || 'unknown'`
      - `commitSource`: which env var provided it

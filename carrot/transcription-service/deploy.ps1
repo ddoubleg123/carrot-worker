@@ -31,6 +31,7 @@ gcloud run deploy $SERVICE_NAME `
   --memory 2Gi `
   --cpu 2 `
   --timeout 900 `
+  --min-instances 1 `
   --max-instances 10 `
   --set-env-vars MODEL_PATH=/app/models/vosk-model-small-en-us-0.15 `
   --project $PROJECT_ID

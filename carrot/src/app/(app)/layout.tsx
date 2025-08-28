@@ -10,6 +10,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect('/login');
   }
 
+  // Check if user needs onboarding
+  if (session.user && !session.user.isOnboarded) {
+    redirect('/onboarding');
+  }
+
   return (
     <main className="flex-1 min-h-screen bg-gray-50">{children}</main>
   );

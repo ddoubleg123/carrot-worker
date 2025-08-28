@@ -1,0 +1,8 @@
+{
+  "databasePath": "./prisma/dev.db",
+  "totalPosts": 0,
+  "targetPostExists": false,
+  "postsWithVideo": 0,
+  "postsWithTranscription": 0,
+  "recentPosts": []
+}

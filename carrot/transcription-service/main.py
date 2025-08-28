@@ -20,14 +20,62 @@ except Exception as e:  # pragma: no cover
 import re
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+print("🚀 Starting Vosk transcription service...")
+logger.info("🚀 Starting Vosk transcription service...")
 
 app = Flask(__name__)
 
-# Initialize Vosk model
+print("📦 Flask app created")
+logger.info("📦 Flask app created")
+
+# Add startup logging (removed deprecated before_first_request)
+
+# Initialize Vosk model (download if needed)
 MODEL_PATH = os.environ.get('MODEL_PATH', '/app/models/vosk-model-small-en-us-0.15')
-model = vosk.Model(MODEL_PATH)
+print(f"🔍 Looking for Vosk model at: {MODEL_PATH}")
+logger.info(f"🔍 Looking for Vosk model at: {MODEL_PATH}")
+
+model = None
+try:
+    # Check if model exists, download if not
+    if not os.path.exists(MODEL_PATH):
+        print(f"📥 Downloading Vosk model to {MODEL_PATH}...")
+        logger.info(f"📥 Downloading Vosk model to {MODEL_PATH}...")
+        
+        import requests
+        import zipfile
+        
+        model_url = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+        zip_path = "/app/models/vosk-model.zip"
+        
+        # Download model
+        response = requests.get(model_url, stream=True)
+        response.raise_for_status()
+        
+        with open(zip_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        # Extract model
+        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+            zip_ref.extractall('/app/models')
+        
+        os.remove(zip_path)
+        print(f"✅ Vosk model downloaded and extracted to {MODEL_PATH}")
+        logger.info(f"✅ Vosk model downloaded and extracted to {MODEL_PATH}")
+    
+    print(f"⏳ Loading Vosk model from {MODEL_PATH}...")
+    logger.info(f"⏳ Loading Vosk model from {MODEL_PATH}...")
+    model = vosk.Model(MODEL_PATH)
+    print(f"✅ Vosk model loaded successfully from {MODEL_PATH}")
+    logger.info(f"✅ Vosk model loaded successfully from {MODEL_PATH}")
+except Exception as e:
+    print(f"❌ Failed to load Vosk model from {MODEL_PATH}: {e}")
+    logger.error(f"❌ Failed to load Vosk model from {MODEL_PATH}: {e}")
+    # Continue without model for health checks
 
 # Initialize Google Cloud clients (optional)
 db = None
@@ -80,6 +128,9 @@ def convert_audio_to_wav(audio_data):
 
 def transcribe_audio(wav_file_path):
     """Transcribe audio using Vosk"""
+    if model is None:
+        raise Exception("Vosk model not loaded")
+    
     try:
         # Read audio file
         data, samplerate = sf.read(wav_file_path)
@@ -445,7 +496,18 @@ def update_post_transcription(post_id, transcription, status='completed'):
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'model_loaded': model is not None})
+    print("🏥 Health check requested")
+    logger.info("🏥 Health check requested")
+    
+    try:
+        response = {'status': 'healthy', 'model_loaded': model is not None}
+        print(f"🏥 Health check response: {response}")
+        logger.info(f"🏥 Health check response: {response}")
+        return jsonify(response)
+    except Exception as e:
+        print(f"❌ Health check failed: {e}")
+        logger.error(f"❌ Health check failed: {e}")
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @app.route('/transcribe', methods=['POST'])
 def transcribe():
@@ -513,4 +575,12 @@ def transcribe():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=False)
+    print(f"🌐 Starting Flask server on port {port}")
+    logger.info(f"🌐 Starting Flask server on port {port}")
+    
+    try:
+        app.run(host='0.0.0.0', port=port, debug=False)
+    except Exception as e:
+        print(f"❌ Failed to start Flask server: {e}")
+        logger.error(f"❌ Failed to start Flask server: {e}")
+        raise

@@ -13,6 +13,7 @@ import {
   HandThumbDownIcon,
   TrashIcon,
   NoSymbolIcon,
+  DocumentDuplicateIcon,
   DocumentTextIcon
 } from '@heroicons/react/24/outline';
 import { 
@@ -681,13 +682,17 @@ export default function CommitmentCard({
               {/* Avatar */}
               <div className="flex-shrink-0">
                 <div className="h-9 w-9 rounded-full bg-gray-200 flex items-center justify-center overflow-hidden">
-                  {author?.avatar ? (
+                  {author?.avatar && author.avatar !== '/avatar-placeholder.svg' ? (
                     <Image 
                       src={author.avatar} 
                       alt={author?.name || 'User'}
                       width={36}
                       height={36}
                       className="h-full w-full object-cover"
+                      onError={(e) => {
+                        console.log('Avatar image failed to load:', author.avatar);
+                        e.currentTarget.style.display = 'none';
+                      }}
                     />
                   ) : (
                     <span className="text-gray-500 text-base font-bold">
@@ -789,6 +794,25 @@ export default function CommitmentCard({
                   </button>
                   {showDropdown && (
                     <div className="absolute right-0 top-8 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+                      <button
+                        onClick={() => {
+                          const postInfo = {
+                            id: id,
+                            content: content?.substring(0, 100) + '...',
+                            author: author?.name || author?.username || 'Unknown',
+                            hasAudio: !!audioUrl,
+                            hasVideo: !!videoUrl,
+                            transcriptionStatus: transcriptionStatus || 'none',
+                            createdAt: timestamp
+                          };
+                          navigator.clipboard.writeText(JSON.stringify(postInfo, null, 2));
+                          setShowDropdown(false);
+                        }}
+                        className="w-full px-4 py-2 text-left text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <DocumentDuplicateIcon className="h-4 w-4" />
+                        Copy Post Info
+                      </button>
                       {isCurrentUserPost ? (
                         <button
                           onClick={() => setShowDeleteConfirm(true)}
@@ -875,32 +899,36 @@ export default function CommitmentCard({
         </div>
       )}
 
-      {/* Media outside white overlay, full gradient width with 1px gutter */}
+      {/* Media outside white overlay, centered with proper spacing */}
       {normalizedImageUrls && normalizedImageUrls.length > 0 && (
-        <div className="-mt-[6px] mx-0 px-0 sm:-mx-6 sm:px-[1px] overflow-hidden rounded-b-2xl max-w-full min-w-0">
-          <SmartMediaDisplay
-            src={normalizedImageUrls[0]}
-            alt="Post image"
-            index={0}
-            onExpand={() => {
-              setSelectedMediaIndex(0);
-              setShowMediaModal(true);
-            }}
-          />
+        <div className="my-2 mx-3 sm:mx-5 flex justify-center max-w-full min-w-0">
+          <div className="relative w-full max-w-full sm:max-w-[550px] mx-auto min-w-0 rounded-xl overflow-hidden">
+            <SmartMediaDisplay
+              src={normalizedImageUrls[0]}
+              alt="Post image"
+              index={0}
+              onExpand={() => {
+                setSelectedMediaIndex(0);
+                setShowMediaModal(true);
+              }}
+            />
+          </div>
         </div>
       )}
       {gifUrl && (
-        <div className="-mt-[6px] mx-0 px-0 sm:-mx-6 sm:px-[1px] overflow-hidden rounded-b-2xl max-w-full min-w-0">
-          <SmartMediaDisplay
-            src={gifUrl}
-            alt="Post GIF"
-            index={0}
-            isGif
-            onExpand={() => {
-              setSelectedMediaIndex(0);
-              setShowMediaModal(true);
-            }}
-          />
+        <div className="my-2 mx-3 sm:mx-5 flex justify-center max-w-full min-w-0">
+          <div className="relative w-full max-w-full sm:max-w-[550px] mx-auto min-w-0 rounded-xl overflow-hidden">
+            <SmartMediaDisplay
+              src={gifUrl}
+              alt="Post GIF"
+              index={0}
+              isGif
+              onExpand={() => {
+                setSelectedMediaIndex(0);
+                setShowMediaModal(true);
+              }}
+            />
+          </div>
         </div>
       )}
       {audioUrl && (

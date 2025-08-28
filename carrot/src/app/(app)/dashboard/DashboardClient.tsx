@@ -60,7 +60,7 @@ export default function DashboardClient({ initialCommitments, isModalComposer = 
       author: {
         name: '',
         username: post.User?.username || 'daniel',
-        avatar: post.User?.profilePhoto || post.User?.image || 'https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0.firebasestorage.app/o/users%2Fcmdm0m8pl00004sbcjr0i6vjg%2Fstaged%2Fe137a64b-9b76-4127-a4c0-5fb2cd4c3176%2F9e257b08-4682-4ab1-839a-5ab2298e3084.png?alt=media&token=a06d95fc-1656-42af-a36f-b9a3349d4239',
+        avatar: post.User?.profilePhoto || post.User?.image || (session?.user as any)?.profilePhoto || (session?.user as any)?.image || '/avatar-placeholder.svg',
         flag: '🇺🇸',
         id: post.userId,
       },
@@ -187,13 +187,17 @@ export default function DashboardClient({ initialCommitments, isModalComposer = 
                 ...existing,
                 ...m,
               };
+              // Preserve avatar from server-side rendering if it exists
+              if (existing.author?.avatar && existing.author.avatar !== '/avatar-placeholder.svg') {
+                merged.author = { ...m.author, avatar: existing.author.avatar };
+              }
               // Preserve CF identifiers/playback when server lacks them
               if (!m.cfUid && existing.cfUid) merged.cfUid = existing.cfUid;
               if (!m.cfPlaybackUrlHls && existing.cfPlaybackUrlHls) merged.cfPlaybackUrlHls = existing.cfPlaybackUrlHls;
               if (!m.thumbnailUrl && existing.thumbnailUrl) merged.thumbnailUrl = existing.thumbnailUrl;
-              // Preserve optimistic upload/transcription states
+              // Preserve optimistic upload states but allow transcription status updates
               merged.uploadStatus = existing.uploadStatus ?? m.uploadStatus ?? null;
-              merged.transcriptionStatus = existing.transcriptionStatus ?? m.transcriptionStatus ?? null;
+              merged.transcriptionStatus = m.transcriptionStatus ?? existing.transcriptionStatus ?? null;
               byId.set(m.id, merged);
             }
           }

@@ -77,10 +77,15 @@ export async function POST(req: NextRequest) {
 
     log('Prisma update input:', JSON.stringify({ where: { email: session.user.email }, data: updateData }));
 
-    log('About to update user in DB with:', JSON.stringify(updateData));
-    const result = await prisma.user.update({
+    log('About to upsert user in DB with:', JSON.stringify(updateData));
+    const result = await prisma.user.upsert({
       where: { email: session.user.email },
-      data: updateData,
+      create: {
+        email: session.user.email,
+        id: session.user.id || undefined,
+        ...updateData
+      },
+      update: updateData,
     });
     log('Prisma update result:', JSON.stringify(result));
     // Fetch user again to verify DB value

@@ -41,10 +41,17 @@ export async function POST(request: Request) {
 
     console.log('[onboard API] Updating user data in Prisma:', updateData);
 
-    // Update the user in Prisma database
-    const updatedUser = await prisma.user.update({
+    console.log('[onboard API] Attempting to upsert user:', session.user.id);
+
+    // Upsert the user in Prisma database (create if doesn't exist, update if exists)
+    const updatedUser = await prisma.user.upsert({
       where: { id: session.user.id },
-      data: updateData,
+      create: {
+        id: session.user.id,
+        email: session.user.email || '',
+        ...updateData
+      },
+      update: updateData,
       select: {
         id: true,
         email: true,

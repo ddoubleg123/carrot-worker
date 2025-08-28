@@ -5,7 +5,7 @@ import { cleanupGrammar, basicGrammarCleanup } from '@/lib/languageTool';
 export const runtime = 'nodejs';
 
 // Transcription service URL (will be Cloud Run URL when deployed)
-const TRANSCRIPTION_SERVICE_URL = process.env.TRANSCRIPTION_SERVICE_URL || 'http://localhost:8080';
+const TRANSCRIPTION_SERVICE_URL = process.env.TRANSCRIPTION_SERVICE_URL || 'http://localhost:8081';
 
 export async function POST(request: NextRequest) {
   let postId: string | undefined;
@@ -72,77 +72,85 @@ export async function POST(request: NextRequest) {
     const mediaUrl = audioUrl || videoUrl;
     const mediaType = audioUrl ? 'audio' : 'video';
     console.log(`🎵 Sending ${mediaType} file to transcription service: ${mediaUrl.substring(0, 80)}...`);
+    // Call the Vosk transcription service
+    const transcriptionServiceUrl = process.env.TRANSCRIPTION_SERVICE_URL || 'https://vosk-transcription-591459094147.us-central1.run.app';
     
-    fetch(`${TRANSCRIPTION_SERVICE_URL}/transcribe`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        postId,
-        audioUrl: audioUrl || null,
-        videoUrl: videoUrl || null,
-        mediaType: mediaType
-      })
-    }).then(async (response) => {
-      if (response.ok) {
-        const result = await response.json();
-        console.log(`✅ Transcription completed for post ${postId}:`, result);
-        
-        // Apply grammar cleanup to the raw transcription
-        let cleanedTranscription = result.transcription;
-        if (cleanedTranscription) {
-          console.log(`🔧 Starting grammar cleanup for post ${postId}`);
-          try {
-            // Try LanguageTool API first
-            cleanedTranscription = await cleanupGrammar(cleanedTranscription);
-            console.log(`✅ LanguageTool cleanup completed for post ${postId}`);
-          } catch (error) {
-            console.warn(`⚠️ LanguageTool failed, using basic cleanup for post ${postId}:`, error);
-            // Fallback to basic cleanup if LanguageTool fails
-            cleanedTranscription = basicGrammarCleanup(cleanedTranscription);
-          }
-        }
-        
-        // Update post with cleaned transcription results
-        await prisma.post.update({
-          where: { id: postId },
-          data: { 
-            transcriptionStatus: result.status || 'completed',
-            audioTranscription: cleanedTranscription
-          }
-        });
-      } else {
-        console.error(`❌ Transcription service error: ${response.status}`);
-        const errorResult = await response.json().catch(() => ({}));
-        
-        // Update status to failed if service call fails
-        await prisma.post.update({
-          where: { id: postId },
-          data: { 
-            transcriptionStatus: 'failed',
-            audioTranscription: `Transcription failed: ${errorResult.error || 'Unknown error'}`
-          }
-        });
-      }
-    }).catch(async (error) => {
-      console.error(`❌ Transcription service error for post ${postId}:`, error);
+    try {
+      console.log(`🔄 Calling transcription service at ${transcriptionServiceUrl}`);
       
-      // Update status to failed on error
+      const voskResponse = await fetch(`${transcriptionServiceUrl}/transcribe`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          postId,
+          audioUrl,
+          videoUrl,
+          mediaType
+        }),
+      });
+
+      if (!voskResponse.ok) {
+        throw new Error(`Vosk service responded with status: ${voskResponse.status}`);
+      }
+
+      const voskResult = await voskResponse.json();
+      console.log('✅ Vosk transcription result:', voskResult);
+
+      if (!voskResult.success || !voskResult.transcription) {
+        throw new Error('Vosk service did not return a valid transcription');
+      }
+
+      let transcription = voskResult.transcription;
+
+      // Apply additional grammar cleanup
+      let cleanedTranscription = transcription;
+      try {
+        console.log(`🔧 Starting grammar cleanup for post ${postId}`);
+        cleanedTranscription = await cleanupGrammar(transcription);
+        console.log(`✅ LanguageTool cleanup completed for post ${postId}`);
+      } catch (error) {
+        console.warn(`⚠️ LanguageTool failed, using basic cleanup for post ${postId}:`, error);
+        cleanedTranscription = basicGrammarCleanup(transcription);
+      }
+      
+      // Update post with cleaned transcription results
+      await prisma.post.update({
+        where: { id: postId },
+        data: { 
+          transcriptionStatus: 'completed',
+          audioTranscription: cleanedTranscription
+        }
+      });
+
+      console.log(`✅ Real transcription completed for post ${postId}`);
+
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Transcription completed',
+        status: 'completed',
+        transcription: cleanedTranscription
+      });
+
+    } catch (voskError) {
+      console.error('❌ Vosk transcription service failed:', voskError);
+      
+      // Update post status to failed
       await prisma.post.update({
         where: { id: postId },
         data: { 
           transcriptionStatus: 'failed',
-          audioTranscription: `Transcription failed: ${error instanceof Error ? error.message : 'Unknown error'}`
+          audioTranscription: `Transcription failed: ${voskError.message}`
         }
       });
-    });
 
-    return NextResponse.json({ 
-      success: true, 
-      message: 'Transcription started',
-      status: 'processing'
-    });
+      return NextResponse.json({ 
+        success: false, 
+        error: `Transcription service failed: ${voskError.message}`,
+        status: 'failed'
+      }, { status: 500 });
+    }
 
   } catch (error) {
     console.error('Transcription API error:', error);

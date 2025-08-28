@@ -16,17 +16,22 @@ const inter = Inter({ subsets: ['latin'] });
 // Server-side data fetching from database (same mapping as dashboard)
 async function getCommitments(): Promise<CommitmentCardProps[]> {
   try {
+    // Get session to use profile photo from session data like composer does
+    const session = await auth();
+    
     // Forward cookies to preserve session auth when calling API from a server component
     const hdrs = await nextHeaders();
-    const cookie = hdrs.get('cookie') ?? '';
-    const base = process.env.NEXTAUTH_URL || 'http://localhost:3005';
-    const url = `${base}/api/posts`;
-    const response = await fetch(url, {
+    const cookieHeader = hdrs.get('cookie') || '';
+    
+    const response = await fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3005'}/api/posts`, {
+      headers: {
+        'Cookie': cookieHeader,
+      },
       cache: 'no-store',
-      headers: cookie ? { cookie } : {},
     });
+    
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
+      const text = await response.text();
       console.error('Error fetching /api/posts:', response.status, text);
       return [];
     }
@@ -39,7 +44,7 @@ async function getCommitments(): Promise<CommitmentCardProps[]> {
       author: {
         name: '',
         username: post.User?.username || 'daniel',
-        avatar: post.User?.profilePhoto || post.User?.image || 'https://firebasestorage.googleapis.com/v0/b/involuted-river-466315-p0.firebasestorage.app/o/users%2Fcmdm0m8pl00004sbcjr0i6vjg%2Fstaged%2Fe137a64b-9b76-4127-a4c0-5fb2cd4c3176%2F9e257b08-4682-4ab1-839a-5ab2298e3084.png?alt=media&token=a06d95fc-1656-42af-a36f-b9a3349d4239',
+        avatar: post.User?.profilePhoto || (session?.user as any)?.profilePhoto || (session?.user as any)?.image || '/avatar-placeholder.svg',
         flag: '🇺🇸',
         id: post.userId,
       },

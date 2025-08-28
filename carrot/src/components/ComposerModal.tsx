@@ -366,7 +366,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
           );
           const isCloudMp4 = typeof url === 'string' && /\/ingest\/.+\.mp4(\?.*)?$/i.test(url) && /^https?:\/\//.test(url) && !/youtube\.com|youtu\.be/i.test(url);
           // Dev-friendly: accept any direct .mp4 URL as playable
-          const isAnyMp4 = typeof url === 'string' && \/\.mp4(\?.*)?$/i.test(url) && !/googlevideo\.com\/videoplayback/i.test(url);
+          const isAnyMp4 = typeof url === 'string' && /\.mp4(\?.*)?$/i.test(url) && !/googlevideo\.com\/videoplayback/i.test(url);
           // Accept placeholder URLs for development
           const isPlaceholder = typeof url === 'string' && /\/api\/media\/placeholder(\?.*)?$/i.test(url);
           // Recognize (but do not accept) YouTube page URLs and transient googlevideo streams
@@ -950,7 +950,6 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
           textareaRef.current.focus();
         }
       }, 0);
-    }
     setShowEmojiPicker(false);
   };
 
@@ -963,162 +962,6 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
     }
   };
 
-<<<<<<< HEAD
-=======
-  // Color wheel sliding functions
-  const slideColorWheel = (direction: 'left' | 'right') => {
-    if (colorWheelRef.current) {
-      const scrollAmount = 200; // pixels to scroll
-      const currentScroll = colorWheelRef.current.scrollLeft;
-      const newScroll = direction === 'left' 
-        ? Math.max(0, currentScroll - scrollAmount)
-        : currentScroll + scrollAmount;
-      
-      colorWheelRef.current.scrollTo({
-        left: newScroll,
-        behavior: 'smooth'
-      });
-      setColorWheelScrollPosition(newScroll);
-    }
-  };
-
-  const canScrollLeft = colorWheelScrollPosition > 0;
-  const canScrollRight = colorWheelRef.current 
-    ? colorWheelScrollPosition < (colorWheelRef.current.scrollWidth - colorWheelRef.current.clientWidth)
-    : true;
-
-  // GIF handlers
-  const handleGifSelect = (gifUrl: string) => {
-    setSelectedGifUrl(gifUrl);
-    setShowGifPicker(false);
-    // Clear other media
-    setMediaPreview(null);
-    setMediaFile(null);
-    setAudioBlob(null);
-    setAudioUrl('');
-  };
-
-  // Network helper: fetch with timeout using AbortController
-  const fetchWithTimeout = async (input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = 15000) => {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      return await fetch(input, { ...init, signal: controller.signal });
-    } finally {
-      clearTimeout(t);
-    }
-  };
-
-  // Utility: load external script once
-  const loadScriptOnce = (src: string) => new Promise<void>((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) return resolve();
-    const s = document.createElement('script');
-    s.src = src;
-    s.async = true;
-    s.onload = () => resolve();
-    s.onerror = () => reject(new Error(`Failed to load script: ${src}`));
-    document.head.appendChild(s);
-  });
-
-  // Lazy-load and init ffmpeg.wasm (component-scope)
-  const ensureFfmpeg = async () => {
-    if (ffmpegRef.current?.isLoaded()) return ffmpegRef.current;
-    // Prefer UMD from same-origin (CSP-friendly)
-    try {
-      await loadScriptOnce('/api/ffmpeg/ffmpeg.min.js');
-    } catch (e) {
-      throw e;
-    }
-    // UMD global may be exposed as FFmpegWASM or FFmpeg
-    const w: any = window as any;
-    const createFFmpeg =
-      w?.FFmpeg?.createFFmpeg ||
-      w?.FFmpegWASM?.createFFmpeg ||
-      w?.FFmpegWASM?.FFmpeg?.createFFmpeg;
-    if (createFFmpeg) {
-      const ff = createFFmpeg({
-        log: false,
-        corePath: '/api/ffmpeg/ffmpeg-core.js',
-      });
-      await ff.load();
-      ffmpegRef.current = ff;
-      return ff;
-    }
-
-    // Some UMD builds expose a class FFmpeg instead of createFFmpeg.
-    const FFmpegClass = w?.FFmpegWASM?.FFmpeg || w?.FFmpeg?.FFmpeg;
-    if (!FFmpegClass) throw new Error('FFmpeg UMD not available');
-    const inst = new FFmpegClass();
-    // Create a small adapter to match createFFmpeg API used by our code
-    const adapter = {
-      loaded: false,
-      isLoaded() { return this.loaded === true || inst.loaded === true; },
-      async load() {
-        await inst.load({
-          corePath: '/api/ffmpeg/ffmpeg-core.js',
-        });
-        this.loaded = true;
-      },
-      async run(...args: string[]) {
-        // exec expects an array of args
-        return await inst.exec(args);
-      },
-      FS(op: string, ...rest: any[]) {
-        switch (op) {
-          case 'writeFile':
-            return inst.writeFile(rest[0], rest[1]);
-          case 'readFile':
-            return inst.readFile(rest[0]);
-          case 'deleteFile':
-            return inst.deleteFile(rest[0]);
-          default:
-            throw new Error(`Unsupported FS op for UMD adapter: ${op}`);
-        }
-      },
-    } as any;
-    await adapter.load();
-    ffmpegRef.current = adapter;
-    return adapter;
-  };
-
-  // Produce a trimmed clip from a source URL (external-ingested video)
-  const renderTrimmedClip = async (srcUrl: string, start: number, end: number): Promise<File | null> => {
-    try {
-      const ff = await ensureFfmpeg();
-      const inName = 'input.mp4';
-      const outName = 'output.mp4';
-      // Fetch bytes and write to FS
-      const absoluteSrc = (() => { try { return new URL(srcUrl, window.location.origin).toString(); } catch { return srcUrl; } })();
-      const buf = await fetchWithTimeout(absoluteSrc, {}, 60000).then(r => r.arrayBuffer());
-      ff.FS('writeFile', inName, new Uint8Array(buf));
-      const ss = Math.max(0, start || 0);
-      const hasEnd = end && end > ss;
-      const args = [
-        '-y',
-        ...(ss ? ['-ss', String(ss)] : []),
-        '-i', inName,
-        ...(hasEnd ? ['-to', String(end)] : []),
-        // Encode to a baseline mp4 similar to worker output
-        '-c:v', 'libx264',
-        '-preset', 'veryfast',
-        '-profile:v', 'baseline',
-        '-level', '3.1',
-        '-c:a', 'aac',
-        '-movflags', '+faststart',
-        outName,
-      ];
-      await ff.run(...args);
-      const data = ff.FS('readFile', outName);
-      const blob = new Blob([data.buffer], { type: 'video/mp4' });
-      return new File([blob], 'edited.mp4', { type: 'video/mp4' });
-    } catch (e) {
-      console.warn('renderTrimmedClip failed; falling back to original', e);
-      showErrorToast('Failed to render trimmed clip; posting original video.');
-      return null;
-    }
-  };
-
->>>>>>> b238a09 (Fix video persistence and CORS issues)
   // Submit handler
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1126,1213 +969,284 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
     // Treat externally ingested video (no mediaFile but mediaType === 'video' with a base URL) as valid media
     const hasExternalIngestedVideo = !mediaFile && mediaType === 'video' && !!mediaBaseUrlRef.current;
     if ((!content.trim() && !mediaFile && !audioBlob && !selectedGifUrl && !externalUrl.trim() && !hasExternalIngestedVideo) || isPosting) return;
-
     setIsPosting(true);
-
     try {
-      let uploadedMediaUrl = '';
-      let thumbnailUrl = '';
-      
-      // Upload media if present
+      // 1) Resolve media URL to attach
+      let uploadedMediaUrl: string | null = null;
       if (mediaFile) {
-        setIsUploading(true);
-        const uploadResult = await uploadFilesToFirebase([mediaFile], 'posts');
-        setUploadProgress(100);
-        
-        if (uploadResult.length > 0) {
-          uploadedMediaUrl = uploadResult[0];
-          
-          // For videos, upload edited thumbnail if available, otherwise selected generated thumbnail
-          if (mediaType === 'video' && (editedThumb || videoThumbnails[currentThumbnailIndex])) {
-            try {
-              const dataUrl = (editedThumb || videoThumbnails[currentThumbnailIndex]) as string;
-              let blob: Blob;
-              if (dataUrl.startsWith('data:')) {
-                blob = dataUrlToBlob(dataUrl);
-              } else {
-                // Remote URL case
-                blob = await fetchWithTimeout(dataUrl, {}, 10000).then(r => r.blob());
-              }
-              const thumbnailFile = new File([blob], 'thumbnail.jpg', { type: 'image/jpeg' });
-              const thumbnailResult = await uploadFilesToFirebase([thumbnailFile], 'thumbnails');
-              if (thumbnailResult.length > 0) {
-                thumbnailUrl = thumbnailResult[0];
-              }
-            } catch (thumbErr) {
-              console.warn('Thumbnail upload skipped due to conversion/upload error:', thumbErr);
-            }
-          }
-        }
-        setIsUploading(false);
-      }
-
-      // For external-ingested videos, we now use BACKGROUND trimming via /api/trim after creating the post.
-      // Skip client-side ffmpeg rendering/upload here; the feed will show a processing state and update when done.
-
-      // Upload audio if present
-      let uploadedAudioUrl = '';
-      if (audioBlob) {
         try {
-          setIsUploading(true);
-          const audioFile = new File([audioBlob], 'recording.webm', { type: 'audio/webm' });
-          const audioResult = await uploadFilesToFirebase([audioFile], 'audio');
-          if (audioResult.length > 0) {
-            uploadedAudioUrl = audioResult[0];
-            showSuccessToast('Audio uploaded');
-          }
-        } catch (audioErr) {
-          console.error('Audio upload failed:', audioErr);
-          showErrorToast('Audio upload failed');
-        } finally {
-          setIsUploading(false);
+          const uploaded = await uploadFilesToFirebase([mediaFile], 'posts/');
+          uploadedMediaUrl = Array.isArray(uploaded) && uploaded.length ? (uploaded[0] as string) : null;
+        } catch (upErr) {
+          console.error('Upload failed:', upErr);
+          showErrorToast('Failed to upload media');
+          setIsPosting(false);
+          return;
         }
       }
 
-      // If the video came from external ingestion (no mediaFile), still upload a thumbnail if available
-      if (!mediaFile && mediaType === 'video' && (editedThumb || videoThumbnails[currentThumbnailIndex])) {
-        try {
-          const dataUrl = (editedThumb || videoThumbnails[currentThumbnailIndex]) as string;
-          let blob: Blob;
-          if (dataUrl.startsWith('data:')) {
-            blob = dataUrlToBlob(dataUrl);
-          } else {
-            blob = await fetchWithTimeout(dataUrl, {}, 10000).then(r => r.blob());
-          }
-          const thumbnailFile = new File([blob], 'thumbnail.jpg', { type: 'image/jpeg' });
-          const thumbnailResult = await uploadFilesToFirebase([thumbnailFile], 'thumbnails');
-          if (thumbnailResult.length > 0) {
-            thumbnailUrl = thumbnailResult[0];
-          }
-        } catch (thumbErr) {
-          console.warn('External video thumbnail upload skipped due to conversion/upload error:', thumbErr);
-        }
-      }
+      const derivedVideoUrl = !mediaFile && mediaType === 'video' ? (mediaBaseUrlRef.current || null) : null;
+      const selectedGif = selectedGifUrl || null;
+      const audioClipUrl = audioUrl || null;
 
-      // Build post payload
-      const scheme = colorSchemes[currentColorScheme];
-      // Determine if we will background-trim an external-ingested video
-      const shouldBackgroundTrim = (!mediaFile && mediaType === 'video' && !!mediaBaseUrlRef.current) && (
-        (videoTrimStart && videoTrimStart > 0) || (videoTrimEnd && videoTrimEnd > 0)
+      // 2) Decide if we should request background trim for externally ingested video
+      const shouldBackgroundTrim = !!(
+        !mediaFile && mediaType === 'video' && mediaBaseUrlRef.current &&
+        ((videoTrimStart && videoTrimStart > 0) || (videoTrimEnd && videoTrimEnd > 0)) &&
+        (videoTrimEnd === 0 || videoTrimEnd > videoTrimStart)
       );
 
-      // Derive final video URL
-      // - If we plan to background-trim, omit the videoUrl for now; it will be filled when the job completes
-      // - Otherwise, prefer any uploaded file URL or use the ingested/base URL
-      const derivedVideoUrl = mediaType === 'video'
-        ? (shouldBackgroundTrim
-            ? null
-            : (uploadedMediaUrl || mediaBaseUrlRef.current || (externalUrl.trim() || null) || (mediaPreview ? mediaPreview.replace(/\?t=\d+$/, '') : null)))
-        : null;
-
-<<<<<<< HEAD
-      // Debug logging for video posting
-      if (mediaType === 'video') {
-        console.log('[ComposerModal] Video posting debug:', {
-          mediaType,
-          hasMediaFile: !!mediaFile,
-          hasExternalIngestedVideo,
-          uploadedMediaUrl,
-          mediaBaseUrl: mediaBaseUrlRef.current,
-          externalUrl: externalUrl.trim(),
-          mediaPreview,
-          derivedVideoUrl,
-          shouldBackgroundTrim,
-          videoTrimStart,
-          videoTrimEnd
-        });
-      }
-
-=======
->>>>>>> b238a09 (Fix video persistence and CORS issues)
-      const postData = {
+      // 3) Create post payload (client-side model; API may vary)
+      const tempId = `post-${Date.now()}`;
+      const user = (session as any)?.user || {};
+      const mediaUrlToUse = uploadedMediaUrl || derivedVideoUrl || selectedGif || null;
+      const mediaKind = mediaUrlToUse ? (mediaType || (selectedGif ? 'gif' : (audioClipUrl ? 'audio' : null))) : null;
+      const newPost: any = {
+        id: tempId,
         content: content.trim(),
-        videoUrl: derivedVideoUrl,
-        gifUrl: selectedGifUrl || null,
-        thumbnailUrl: thumbnailUrl || null,
-        audioUrl: uploadedAudioUrl || null,
-        audioTranscription: audioTranscription || null,
-        audioDurationSeconds: audioDurationSeconds || null,
-        externalUrl: externalUrl.trim() || null,
-        // Video edit metadata for reference (client already applied trim for external videos)
-        videoTrimStart: (videoTrimStart || null),
-        videoTrimEnd: (videoTrimEnd || null),
-        videoAspect: mediaType === 'video' ? videoAspect : null,
-        // Gradient/theme fields
-        gradientFromColor: scheme?.gradientFromColor || null,
-        gradientToColor: scheme?.gradientToColor || null,
-        gradientViaColor: scheme?.gradientViaColor || null,
-        // Image URLs: include when the media type is image and we uploaded successfully
-        imageUrls: (mediaType === 'image' && uploadedMediaUrl) ? [uploadedMediaUrl] : null,
-      } as any;
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('ComposerModal POST /api/posts payload:', postData);
-      }
+        mediaUrl: mediaUrlToUse,
+        mediaType: mediaKind,
+        audioUrl: audioClipUrl,
+        createdAt: new Date().toISOString(),
+        user,
+      };
 
-      // Quick connectivity probe to surface mixed-content/origin issues early
+      // 4) Persist post via API (best-effort; keep optimistic update)
       try {
-        await fetchWithTimeout('/api/posts', { method: 'GET', credentials: 'include' }, 5000);
-      } catch (probeErr) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('Connectivity probe to /api/posts failed, retrying with absolute URL', probeErr);
-        }
-        const origin = typeof window !== 'undefined' ? window.location.origin : '';
-        if (origin) {
-          try {
-            await fetchWithTimeout(`${origin}/api/posts`, { method: 'GET', credentials: 'include' }, 5000);
-          } catch (absErr) {
-            throw new Error(`API unreachable at ${origin}/api/posts. Check network, origin/protocol, or blockers.`);
-          }
-        }
-      }
-
-      let response: Response | null = null;
-      const payload = JSON.stringify(postData);
-      try {
-        if (process.env.NODE_ENV !== 'production') {
-          console.debug('ComposerModal about to POST /api/posts');
-        }
-        response = await fetchWithTimeout('/api/posts', {
+        const res = await fetch('/api/posts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          credentials: 'include',
-          body: payload,
-        }, 15000);
-      } catch (err) {
-        // Network error on relative path; try absolute same-origin URL
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('Relative /api/posts fetch failed, retrying with absolute URL. Error:', err);
+          body: JSON.stringify({
+            content: newPost.content,
+            mediaUrl: newPost.mediaUrl,
+            mediaType: newPost.mediaType,
+            audioUrl: newPost.audioUrl,
+          }),
+        });
+        if (res.ok) {
+          const saved = await res.json().catch(() => null);
+          if (saved?.id) newPost.id = saved.id;
         }
-        const origin = typeof window !== 'undefined' ? window.location.origin : '';
-        if (origin) {
-          response = await fetchWithTimeout(`${origin}/api/posts`, {
+      } catch {
+        // Non-fatal; keep optimistic
+      }
+
+      // 5) Surface to feed immediately
+      onPost(newPost);
+
+      // 6) Start background trim if required
+      if (shouldBackgroundTrim && mediaBaseUrlRef.current) {
+        try {
+          const trimRes = await fetch('/api/trim', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: payload,
-          }, 15000);
-        } else {
-          throw err; // No window origin available
-        }
-      }
-      if (process.env.NODE_ENV !== 'production' && response) {
-        console.debug('ComposerModal POST /api/posts status:', response.status);
-      }
-
-      if (response.ok) {
-        const newPost = await response.json();
-        if (process.env.NODE_ENV !== 'production') {
-          console.debug('ComposerModal created post:', newPost?.id);
-        }
-        showSuccessToast('Post created successfully!');
-        
-<<<<<<< HEAD
-        // Automatically change to a new color scheme after successful post
-        selectRandomColorScheme();
-        
-        // Link ingest job to post if this was an external video
-        if (ingestJobId) {
-          try {
-            await fetch(`/api/ingest?jobId=${ingestJobId}`, {
-=======
-        // Link ingest job to post if this was an external video
-        if (ingestJobId) {
-          try {
-            await fetch(`/api/ingest/${ingestJobId}`, {
->>>>>>> b238a09 (Fix video persistence and CORS issues)
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ postId: newPost.id })
-            });
-            console.log('[ComposerModal] Linked ingest job to post:', { jobId: ingestJobId, postId: newPost.id });
-          } catch (err) {
-            console.error('[ComposerModal] Failed to link ingest job to post:', err);
-          }
-        }
-
-        // Call onPost with the new post data to update the feed
-        onPost(newPost);
-
-        // If background trim is needed, enqueue it now and optimistically mark post as processing
-        if (shouldBackgroundTrim && mediaBaseUrlRef.current) {
-          try {
-            const trimRes = await fetch('/api/trim', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                sourceUrl: mediaBaseUrlRef.current,
-                startSec: videoTrimStart || 0,
-                endSec: videoTrimEnd || 0,
-                postId: newPost.id,
-              }),
-            });
-            if (trimRes.ok) {
-              const trimData = await trimRes.json().catch(() => null);
-              const trimJobId = trimData?.job?.id || trimData?.jobId || null;
-              if (trimJobId) {
-                // Attach lightweight client-side status for UI; backend does not persist these fields
-                onPostUpdate(newPost.id, { ...newPost, status: 'processing', trimJobId });
-                showSuccessToast('Trimming started in background. We will update your post when ready.');
-              } else {
-                showErrorToast('Trim job started but no job ID returned.');
-              }
+            body: JSON.stringify({
+              sourceUrl: mediaBaseUrlRef.current,
+              startSec: videoTrimStart || 0,
+              endSec: videoTrimEnd || 0,
+              postId: newPost.id,
+            }),
+          });
+          if (trimRes.ok) {
+            const trimData = await trimRes.json().catch(() => null);
+            const trimJobId = trimData?.job?.id || trimData?.jobId || null;
+            if (trimJobId) {
+              onPostUpdate(newPost.id, { ...newPost, status: 'processing', trimJobId });
+              showSuccessToast('Trimming started in background. We will update your post when ready.');
             } else {
-              const t = await trimRes.text().catch(() => '');
-              showErrorToast(`Failed to start trim job (${trimRes.status})${t ? ': ' + t : ''}`);
+              showErrorToast('Trim job started but no job ID returned.');
             }
-          } catch (trimErr) {
-            console.error('Failed to enqueue trim job:', trimErr);
-            showErrorToast('Failed to start background trimming');
+          } else {
+            const t = await trimRes.text().catch(() => '');
+            showErrorToast(`Failed to start trim job (${trimRes.status})${t ? ': ' + t : ''}`);
           }
+        } catch (trimErr) {
+          console.error('Failed to enqueue trim job:', trimErr);
+          showErrorToast('Failed to start background trimming');
         }
-        
-        // Reset form
-        setContent('');
-        setMediaPreview(null);
-        setMediaFile(null);
-        setMediaType(null);
-        setAudioBlob(null);
-        setAudioUrl('');
-        setAudioTranscription('');
-        setAudioDurationSeconds(null);
-        setSelectedGifUrl(null);
-        setVideoThumbnails([]);
-        setCurrentThumbnailIndex(0);
-        setExternalUrl('');
-        
-        onClose();
-      } else {
-        // Attempt to read error details for visibility
-        let errText = '';
-        try { errText = await response.text(); } catch {}
-        throw new Error(`Failed to create post (status ${response.status}) ${errText ? '- ' + errText : ''}`);
       }
-    } catch (error) {
-      console.error('Error creating post:', error);
-      const msg = error instanceof Error ? error.message : 'Unknown error';
-      showErrorToast(`Failed to create post: ${msg}`);
-    } finally {
+
+      // 7) Link ingest job to post if this was an external video
+      if (ingestJobId) {
+        try {
+          await fetch(`/api/ingest?jobId=${ingestJobId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ postId: newPost.id })
+          });
+          console.log('[ComposerModal] Linked ingest job to post:', { jobId: ingestJobId, postId: newPost.id });
+        } catch (err) {
+          console.error('[ComposerModal] Failed to link ingest job to post:', err);
+        }
+      }
+
+      // 8) Success UX
+      selectRandomColorScheme();
+      showSuccessToast('Posted!');
       setSubmitRequested(false);
+      setShowMediaPicker(false);
+      setMediaFile(null);
+      setMediaPreview(null);
+      setSelectedGifUrl(null);
+      setAudioBlob(null);
+      setAudioUrl('');
+      setContent('');
+    } finally {
       setIsPosting(false);
-      setIsUploading(false);
-      setUploadProgress(0);
     }
   };
 
-  if (!isOpen) return null;
-
-  const currentScheme = colorSchemes[currentColorScheme];
-
   return (
     <>
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        {/* Backdrop */}
-        <div 
-          className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-          onClick={onClose}
-        />
-        
-        {/* Modal */}
-        <div 
-          className="relative w-full max-w-2xl bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-hidden"
-          style={{
-            background: `linear-gradient(135deg, ${currentScheme.gradientFromColor} 0%, ${currentScheme.gradientViaColor} 50%, ${currentScheme.gradientToColor} 100%)`
-          }}
-        >
-          {/* Header */}
-          <div className="flex items-center justify-between p-6 border-b border-white/20">
-            <h2 className="text-xl font-semibold text-gray-900">Create post</h2>
-            <div className="flex items-center gap-2 relative">
-              <button
-                onClick={() => setShowColorPicker(!showColorPicker)}
-                className="p-2 hover:bg-white/20 rounded-full transition-colors duration-200"
-                title="Choose color scheme"
-              >
-                <div className="w-5 h-5 rounded-full bg-gradient-to-r from-orange-400 to-red-500 border border-gray-300"></div>
-              </button>
-              <button
-                onClick={selectRandomColorScheme}
-                className="p-2 hover:bg-white/20 rounded-full transition-colors duration-200"
-                title="Random color scheme"
-              >
-                <Zap className="w-5 h-5 text-gray-700" />
-              </button>
-              <button
-                onClick={onClose}
-                className="p-2 hover:bg-white/20 rounded-full transition-colors duration-200"
-              >
-                <X className="w-5 h-5 text-gray-700" />
+      {isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+          <div className="relative bg-white rounded-2xl p-0 w-full max-w-2xl shadow-xl overflow-hidden">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b">
+              <h3 className="text-lg font-semibold">Compose</h3>
+              <button type="button" onClick={onClose} className="p-2 rounded-full hover:bg-gray-100">
+                <X className="w-5 h-5" />
               </button>
             </div>
-          </div>
 
-          {/* Color Picker Dropdown with Sliding Mechanism */}
-          {showColorPicker && (
-            <div className="absolute top-16 right-6 z-10 bg-white rounded-xl shadow-lg border border-gray-200 p-4 w-80">
-              <div className="text-sm font-medium text-gray-700 mb-3">Choose Color Scheme</div>
-              
-              {/* Horizontal Sliding Color Wheel */}
-              <div className="relative">
-                {/* Left Arrow */}
-                <button
-                  onClick={() => slideColorWheel('left')}
-                  className={`absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 bg-white rounded-full shadow-md border border-gray-200 flex items-center justify-center transition-opacity duration-200 ${
-                    canScrollLeft ? 'opacity-100 hover:bg-gray-50' : 'opacity-30 cursor-not-allowed'
-                  }`}
-                  disabled={!canScrollLeft}
-                >
-                  <ChevronLeft className="w-4 h-4 text-gray-600" />
-                </button>
-
-                {/* Right Arrow */}
-                <button
-                  onClick={() => slideColorWheel('right')}
-                  className={`absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 bg-white rounded-full shadow-md border border-gray-200 flex items-center justify-center transition-opacity duration-200 ${
-                    canScrollRight ? 'opacity-100 hover:bg-gray-50' : 'opacity-30 cursor-not-allowed'
-                  }`}
-                  disabled={!canScrollRight}
-                >
-                  <ChevronRight className="w-4 h-4 text-gray-600" />
-                </button>
-
-                {/* Scrollable Color Container */}
-                <div 
-                  ref={colorWheelRef}
-                  className="flex overflow-x-auto scrollbar-hide gap-3 pb-2 px-10" 
-                  style={{ scrollBehavior: 'smooth' }}
-                  onScroll={(e) => setColorWheelScrollPosition(e.currentTarget.scrollLeft)}
-                >
-                  {colorSchemes.map((scheme, index) => (
-                    <button
-                      key={index}
-                      onClick={() => selectColorScheme(index)}
-                      className={`relative flex-shrink-0 w-16 h-16 rounded-full border-3 transition-all duration-300 hover:scale-110 hover:shadow-lg ${
-                        currentColorScheme === index ? 'border-orange-500 ring-2 ring-orange-200 scale-110' : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                      style={{
-                        background: `linear-gradient(135deg, ${scheme.gradientFromColor} 0%, ${scheme.gradientViaColor} 50%, ${scheme.gradientToColor} 100%)`
-                      }}
-                      title={scheme.name}
-                    >
-                      {currentColorScheme === index && (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <div className="w-4 h-4 bg-white rounded-full shadow-md border border-gray-200"></div>
-                        </div>
-                      )}
-                    </button>
-                  ))}
-                </div>
-                
-                {/* Slide indicators */}
-                <div className="flex justify-center mt-2 gap-1">
-                  {Array.from({ length: Math.ceil(colorSchemes.length / 4) }).map((_, pageIndex) => (
-                    <div
-                      key={pageIndex}
-                      className={`w-2 h-2 rounded-full transition-colors duration-200 ${
-                        Math.floor(currentColorScheme / 4) === pageIndex ? 'bg-orange-400' : 'bg-gray-300'
-                      }`}
-                    />
-                  ))}
-                </div>
-              </div>
-              
-              {/* Current scheme info */}
-              <div className="mt-3 pt-3 border-t border-gray-100">
-                <div className="text-xs text-gray-500">Current: {colorSchemes[currentColorScheme]?.name}</div>
-              </div>
-            </div>
-          )}
-
-          {/* Content */}
-          <div className="p-6 max-h-[calc(90vh-120px)] overflow-y-auto">
-            <form onSubmit={handleSubmit}>
-              {/* User Info */}
-              <div className="flex items-center gap-3 mb-4">
-                {/* User Avatar */}
-                {(session?.user as any)?.profilePhoto || (session?.user as any)?.image ? (
-                  <Image
-                    src={(session?.user as any)?.profilePhoto || (session?.user as any)?.image}
-                    alt="Your avatar"
-                    width={48}
-                    height={48}
-                    className="w-12 h-12 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-12 h-12 bg-gradient-to-br from-orange-400 to-red-500 rounded-full flex items-center justify-center">
-                    <span className="text-white font-medium">
-                      {((session?.user as any)?.username || (session?.user as any)?.name || 'U')
-                        .split(/[\s@._-]+/)
-                        .filter(Boolean)
-                        .slice(0, 2)
-                        .map((s: string) => s[0]?.toUpperCase() || '')
-                        .join('') || 'U'}
-                    </span>
-                  </div>
-                )}
-                <div>
-                  <div className="font-medium text-gray-900">
-                    {(session?.user as any)?.username || (session?.user as any)?.name || 'Anonymous'}
-                  </div>
-                  <div className="text-sm text-gray-600">
-                    Public post
-                  </div>
-                </div>
-              </div>
-
-              {/* Current Color Scheme label only (removed preview box) */}
-              <div className="mb-2">
-                <div className="text-sm text-gray-700">Current Color Scheme: {colorSchemes[currentColorScheme]?.name}</div>
-              </div>
-
-              {/* Text Area */}
-              <div className="mb-4">
-                <textarea
-                  ref={textareaRef}
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  placeholder="What's happening?"
-                  className="w-full h-32 p-4 text-lg bg-white/50 border border-white/30 rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent placeholder-gray-600"
-                  autoFocus
-                />
-              </div>
-
-              {/* Cloudflare Stream Preview (when cfUid available) */}
-              {cfUidPreview && (
-<<<<<<< HEAD
-=======
-                <div className="mb-4 relative">
-                  <CFVideoPlayer uid={cfUidPreview} autoPlay muted loop controls />
-                  <div className="mt-2 text-xs text-gray-700">Cloudflare Stream preview</div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCfUidPreview(null);
-                      setMediaType(null);
-                    }}
-                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {/* Media Preview (local or worker-served MP4) */}
-              {mediaPreview && (
->>>>>>> b238a09 (Fix video persistence and CORS issues)
-                <div className="mb-4 relative">
-                  <CFVideoPlayer uid={cfUidPreview} autoPlay muted loop controls />
-                  <div className="mt-2 text-xs text-gray-700">Cloudflare Stream preview</div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCfUidPreview(null);
-                      setMediaType(null);
-                    }}
-                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {/* Media Preview */}
-              {mediaPreview && mediaType === 'image' && (
-                <div className="mb-4 relative">
-                  <img src={mediaPreview} alt="Preview" className="w-full max-h-64 object-cover rounded-xl" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMediaPreview(null);
-                      setMediaFile(null);
-                      setMediaType(null);
-                    }}
-                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {/* Video Preview */}
-              {mediaType === 'video' && (
-                <div className="mb-4 relative">
-                  {mediaPreview ? (
-                    <div className="relative">
-                      <video
-<<<<<<< HEAD
-                        ref={previewVideoRef}
-                        src={mediaPreview}
-                        className="w-full max-h-96 rounded-xl object-cover"
-=======
-                        ref={(el) => { previewVideoRef.current = el; }}
-                        key={mediaPreview || 'video'}
-                        className="w-full max-h-64 object-cover rounded-xl"
->>>>>>> b238a09 (Fix video persistence and CORS issues)
-                        controls
-                        preload="metadata"
-                        playsInline
-                        src={mediaPreview || ''}
-                        onLoadedMetadata={(e) => {
-<<<<<<< HEAD
-                          const v = e.currentTarget;
-                          if (v && v.duration && !isNaN(v.duration) && v.duration > 0) {
-                            setVideoDuration(v.duration);
-                            setVideoTrimEnd(v.duration);
-                            videoLoadRetryRef.current = 0;
-                          }
-                        }}
-                        onError={(e) => {
-                          try {
-                            const v = e.currentTarget as HTMLVideoElement;
-                            const err = (v as any)?.error as MediaError | undefined;
-                            console.error('Video failed to load', {
-                              src: v?.currentSrc || (mediaPreview ?? ''),
-                              readyState: v?.readyState,
-                              networkState: v?.networkState,
-                              errorCode: err?.code,
-                              errorMsg:
-                                err?.code === 1 ? 'ABORTED' :
-                                err?.code === 2 ? 'NETWORK' :
-                                err?.code === 3 ? 'DECODE' :
-                                err?.code === 4 ? 'SRC_NOT_SUPPORTED' : undefined,
-                            });
-
-                            // One-time retry: toggle cache-buster or strip it
-                            if (videoLoadRetryRef.current < 1) {
-                              videoLoadRetryRef.current += 1;
-                              const base = mediaBaseUrlRef.current || (mediaPreview ?? '');
-                              const toggle = base.includes('?') ? `${base}&t=${Date.now()}` : `${base}?t=${Date.now()}`;
-                              // Attempt retry without setState to avoid re-render loops
-                              v.src = toggle;
-                              try { v.load(); } catch {}
-                              return;
-                            }
-                            // Persistent failure: surface to user
-                            try { showErrorToast('Could not load video preview.'); } catch {}
-                          } catch {}
-=======
-                          const v = e.currentTarget as HTMLVideoElement;
-                          const d = v.duration || 0;
-                          console.log("[DEBUG] Video duration from metadata:", d, "seconds =", Math.floor(d/60), "minutes");
-                          console.log("[DEBUG] Video readyState:", v.readyState);
-                          console.log("[DEBUG] Video src length:", v.src.length);
-                          setVideoDuration(d);
-                          setVideoTrimStart(0);
-                          setVideoTrimEnd(d);
->>>>>>> b238a09 (Fix video persistence and CORS issues)
-                        }}
-                        onCanPlay={(e) => {
-                          // Fallback in case loadedmetadata didn't fire
-                          const v = e.currentTarget as HTMLVideoElement;
-                          if (!videoDuration || !isFinite(videoDuration)) {
-                            const d = v.duration || 0;
-                            setVideoDuration(d);
-                            if (!videoTrimEnd) setVideoTrimEnd(d);
-                          }
-                        }}
-                        onError={(e) => {
-                          try {
-                            const v = e.currentTarget as HTMLVideoElement;
-                            const err = (v as any)?.error as MediaError | undefined;
-                            console.error('Video failed to load', {
-                              src: v?.currentSrc || (mediaPreview ?? ''),
-                              readyState: v?.readyState,
-                              networkState: v?.networkState,
-                              errorCode: err?.code,
-                              errorMsg:
-                                err?.code === 1 ? 'ABORTED' :
-                                err?.code === 2 ? 'NETWORK' :
-                                err?.code === 3 ? 'DECODE' :
-                                err?.code === 4 ? 'SRC_NOT_SUPPORTED' : undefined,
-                            });
-
-                            // One-time retry: toggle cache-buster or strip it
-                            if (videoLoadRetryRef.current < 1) {
-                              videoLoadRetryRef.current += 1;
-                              const base = mediaBaseUrlRef.current || (mediaPreview ?? '');
-                              const toggle = base.includes('?') ? `${base}&t=${Date.now()}` : `${base}?t=${Date.now()}`;
-                              // Attempt retry without setState to avoid re-render loops
-                              v.src = toggle;
-                              try { v.load(); } catch {}
-                              return;
-                            }
-                            // Persistent failure: surface to user
-                            try { showErrorToast('Could not load video preview.'); } catch {}
-                          } catch {}
-                        }}
-                      />
-                      
-                      {/* Helper text */}
-                      <div className="mt-2 text-xs text-gray-700">
-                        Drag the crop handles below to trim the video start and end.
-                      </div>
-                      {/* Inline trim controls */}
-                      <div className="mt-3">
-                        <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
-                          <span>Start: {videoTrimStart.toFixed(2)}s</span>
-                          <span>End: {videoTrimEnd.toFixed(2)}s</span>
-                          <span>Duration: {videoDuration.toFixed(2)}s</span>
-                        </div>
-                        {/* Single visual track with truncation shading and draggable handles */}
-                        <div ref={trimTrackRef} className="relative w-full h-3 mb-4 rounded bg-gray-200 overflow-hidden select-none touch-none">
-                          {/* Shaded left (cropped) */}
-                          <div
-                            className="absolute top-0 left-0 h-full bg-gray-400/60"
-                            style={{ width: `${videoDuration ? (Math.min(videoTrimStart, videoTrimEnd) / videoDuration) * 100 : 0}%` }}
-                          />
-                          {/* Shaded right (cropped) */}
-                          <div
-                            className="absolute top-0 right-0 h-full bg-gray-400/60"
-                            style={{ width: `${videoDuration ? ((videoDuration - Math.max(videoTrimEnd, videoTrimStart)) / videoDuration) * 100 : 0}%` }}
-                          />
-                          {/* Selected region highlight */}
-                          <div
-                            className="absolute top-0 h-full bg-orange-500/50"
-                            style={{
-                              left: `${videoDuration ? (Math.min(videoTrimStart, videoTrimEnd) / videoDuration) * 100 : 0}%`,
-                              width: `${videoDuration ? ((Math.max(videoTrimEnd, videoTrimStart) - Math.min(videoTrimStart, videoTrimEnd)) / videoDuration) * 100 : 0}%`
-                            }}
-                          />
-                          {/* Crop handles */}
-                          {/* Start handle (full-hit area) */}
-                          <button
-                            type="button"
-                            aria-label="Trim start"
-                            onMouseDown={() => setDraggingHandle('start')}
-                            onTouchStart={() => setDraggingHandle('start')}
-                            className="absolute -top-4 w-10 h-10 z-10 bg-transparent cursor-ew-resize transform -translate-x-1/2 touch-none"
-                            style={{ left: `${videoDuration ? (Math.min(videoTrimStart, videoTrimEnd) / videoDuration) * 100 : 0}%` }}
-                          >
-                            <span className="pointer-events-none absolute inset-0 m-auto w-4 h-6 bg-white border-2 border-orange-500 rounded-md shadow-lg ring-2 ring-orange-300 ring-offset-2 ring-offset-white" />
-                          </button>
-                          {/* End handle (full-hit area) */}
-                          <button
-                            type="button"
-                            aria-label="Trim end"
-                            onMouseDown={() => setDraggingHandle('end')}
-                            onTouchStart={() => setDraggingHandle('end')}
-                            className="absolute -top-4 w-10 h-10 z-10 bg-transparent cursor-ew-resize transform -translate-x-1/2 touch-none"
-                            style={{ left: `${videoDuration ? (Math.max(videoTrimEnd, videoTrimStart) / videoDuration) * 100 : 0}%` }}
-                          >
-                            <span className="pointer-events-none absolute inset-0 m-auto w-4 h-6 bg-white border-2 border-red-500 rounded-md shadow-lg ring-2 ring-red-300 ring-offset-2 ring-offset-white" />
-                          </button>
-                          {/* Truncation symbols above handles */}
-                          <div className="absolute -top-5 text-orange-600 text-lg select-none" style={{ left: `calc(${videoDuration ? (Math.min(videoTrimStart, videoTrimEnd) / videoDuration) * 100 : 0}% - 6px)` }}>⟪</div>
-                          <div className="absolute -top-5 text-red-600 text-lg select-none" style={{ left: `calc(${videoDuration ? (Math.max(videoTrimEnd, videoTrimStart) / videoDuration) * 100 : 0}% - 6px)` }}>⟫</div>
-                        </div>
-                        <div className="mt-1 text-xs text-gray-600">Selected clip: {(Math.max(0, videoTrimEnd - videoTrimStart)).toFixed(2)}s</div>
-                      </div>
-                      {videoThumbnails.length > 0 && (
-                        <div className="mt-2">
-                          <div className="text-sm text-gray-700 mb-2">Choose thumbnail:</div>
-                          <div className="flex gap-2 overflow-x-auto">
-                            {videoThumbnails.map((thumb, index) => (
-                              <img
-                                key={index}
-                                src={thumb}
-                                alt={`Thumbnail ${index + 1}`}
-                                className={`w-20 h-12 object-cover rounded cursor-pointer border-2 ${
-                                  currentThumbnailIndex === index ? 'border-orange-500' : 'border-transparent'
-                                }`}
-                                onClick={() => setCurrentThumbnailIndex(index)}
-                              />
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="w-full h-64 rounded-xl bg-gradient-to-br from-orange-50 to-red-50 border border-orange-200 flex flex-col items-center justify-center p-6">
-                      <div className="text-center max-w-sm">
-                        {/* Progress Circle */}
-                        <div className="relative w-20 h-20 mx-auto mb-4">
-                          <div className="absolute inset-0 rounded-full border-4 border-orange-100"></div>
-                          <div 
-                            className="absolute inset-0 rounded-full border-4 border-orange-500 transition-all duration-300"
-                            style={{
-                              clipPath: `conic-gradient(from 0deg, transparent ${360 - (ingestProgress || 0) * 3.6}deg, orange ${360 - (ingestProgress || 0) * 3.6}deg)`
-                            }}
-                          ></div>
-                          <div className="absolute inset-0 flex items-center justify-center">
-                            <svg className="w-8 h-8 text-orange-500" fill="currentColor" viewBox="0 0 24 24">
-                              <path d="M8 5v14l11-7z"/>
-                            </svg>
-                          </div>
-                        </div>
-                        
-                        {/* Status Text */}
-                        <div className="font-medium text-gray-900 mb-2">
-                          {ingestStatus === 'downloading' && 'Downloading Video...'}
-                          {ingestStatus === 'transcoding' && 'Processing Video...'}
-                          {ingestStatus === 'uploading' && 'Uploading to Storage...'}
-                          {ingestStatus === 'finalizing' && 'Finalizing...'}
-                          {ingestStatus === 'completed' && 'Video Ready'}
-                          {(!ingestStatus || ingestStatus === 'queued') && 'Preparing Video...'}
-                        </div>
-                        
-                        {/* Progress Bar */}
-                        <div className="w-full bg-gray-200 rounded-full h-2 mb-2">
-                          <div 
-                            className="bg-orange-500 h-2 rounded-full transition-all duration-300"
-                            style={{ width: `${ingestProgress || 0}%` }}
-                          />
-                        </div>
-                        
-                        {/* Progress Percentage */}
-                        <div className="text-sm text-gray-600">
-                          {ingestProgress ? `${Math.round(ingestProgress)}%` : '0%'} complete
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setMediaPreview(null);
-                      setMediaFile(null);
-                      setMediaType(null);
-                      setVideoThumbnails([]);
-                      setEditedThumb(null);
-                      setVideoTrimStart(0);
-                      setVideoTrimEnd(0);
-                      setVideoAspect('16:9');
-                      setVideoDuration(0);
-                      setExternalUrl('');
-                      mediaBaseUrlRef.current = null;
-                    }}
-                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-              {/* GIF Preview */}
-              {selectedGifUrl && (
-                <div className="mb-4 relative">
-                  <img src={selectedGifUrl} alt="Selected GIF" className="w-full max-h-64 object-cover rounded-xl" />
-                  <button
-                    type="button"
-                    onClick={() => setSelectedGifUrl(null)}
-                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-              )}
-
-              {/* Audio Preview */}
-              {audioUrl && (
-                <div className="mb-4">
-                  <AudioPlayer
-                    audioUrl={audioUrl}
-                    postId={currentPostId || 'temp'}
-                    initialDurationSeconds={audioDurationSeconds ?? undefined}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAudioBlob(null);
-                      setAudioUrl('');
-                      setAudioTranscription('');
-                      setAudioDurationSeconds(null);
-                    }}
-                    className="mt-2 text-sm text-red-600 hover:text-red-800"
-                  >
-                    Remove audio
-                  </button>
-                </div>
-              )}
-
-              {/* Upload Progress */}
-              {isUploading && (
-                <div className="mb-4">
-                  <div className="text-sm text-gray-700 mb-1" role="status" aria-live="polite">Uploading and transcribing... {Math.round(uploadProgress)}%</div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div 
-                      className="bg-orange-500 h-2 rounded-full transition-all duration-300"
-                      style={{ width: `${uploadProgress}%` }}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* Hidden file input for 'Upload from your computer' */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,video/*"
-                onChange={(e) => {
-                  console.log("[DEBUG] File input onChange triggered");
-                  if (e.target.files && e.target.files[0]) {
-                    const file = e.target.files[0];
-                    console.log("[DEBUG] Raw file from input:", {
-                      name: file.name,
-                      size: file.size,
-                      type: file.type,
-                      lastModified: file.lastModified
-                    });
-                  }
-                  setShowMediaPicker(false);
-                  handleImageUpload(e);
-                }}
-                className="hidden"
+            {/* Body */}
+            <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
+              <textarea
+                ref={textareaRef}
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder="What's happening?"
+                maxLength={1000}
+                className="w-full min-h-[100px] resize-vertical outline-none"
               />
 
-              {/* Media Upload Buttons */}
-              <div className="flex items-center gap-4 mb-6">
-                <button
-                  type="button"
-                  onClick={() => setShowMediaPicker(true)}
-                  className="flex items-center gap-2 px-4 py-2 bg-white/30 hover:bg-white/50 rounded-full transition-colors duration-200"
-                >
-                  <Camera className="w-5 h-5 text-gray-700" />
-                  <span className="text-sm font-medium text-gray-700">Photo/Video</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setShowAudioRecorder(true)}
-                  className="flex items-center gap-2 px-4 py-2 bg-white/30 hover:bg-white/50 rounded-full transition-colors duration-200"
-                >
-                  <Mic className="w-5 h-5 text-gray-700" />
-                  <span className="text-sm font-medium text-gray-700">Audio</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowGifPicker(!showGifPicker);
-                    setShowEmojiPicker(false);
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 bg-white/30 hover:bg-white/50 rounded-full transition-colors duration-200"
-                >
-                  <span className="text-sm font-medium text-gray-700">GIF</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowEmojiPicker(!showEmojiPicker);
-                    setShowGifPicker(false);
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 bg-white/30 hover:bg-white/50 rounded-full transition-colors duration-200"
-                >
-                  <Smile className="w-5 h-5 text-gray-700" />
-                  <span className="text-sm font-medium text-gray-700">Emoji</span>
-                </button>
-              </div>
-
-              {/* Emoji Picker */}
-              {showEmojiPicker && (
-                <div className="mb-4 p-4 bg-white/50 rounded-xl max-h-48 overflow-y-auto">
-                  {Object.entries(emojiCategories).map(([category, emojis]) => (
-                    <div key={category} className="mb-3">
-                      <div className="text-sm font-medium text-gray-700 mb-2">{category}</div>
-                      <div className="flex flex-wrap gap-1">
-                        {emojis.map((emoji) => (
-                          <button
-                            key={emoji}
-                            type="button"
-                            onClick={() => handleEmojiSelect(emoji)}
-                            className="p-1 hover:bg-white/50 rounded text-xl"
-                          >
-                            {emoji}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* GIF Picker */}
-              {showGifPicker && (
-                <div className="mb-4">
-                  <GifPicker 
-                    isOpen={showGifPicker}
-                    onClose={() => setShowGifPicker(false)}
-                    onSelectGif={handleGifSelect}
-                  />
-                </div>
-              )}
-
-              {/* Intermediary Media Picker */}
-              {showMediaPicker && (
-                <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/30 p-4">
-                  <div className="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-gray-200 p-0 overflow-hidden">
-                    {/* Header */}
-                    <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                      <div className="text-base font-semibold text-gray-900">Add media</div>
-                      <button
-                        type="button"
-                        onClick={() => setShowMediaPicker(false)}
-                        className="p-2 rounded-full hover:bg-gray-100"
-                        aria-label="Close"
-                      >
-                        <X className="w-5 h-5 text-gray-600" />
-                      </button>
-                    </div>
-
-                    {/* Tabs: Gallery | Upload | External */}
-                    <div className="grid grid-cols-3">
-                      {([
-                        { key: 'gallery', label: 'Gallery' },
-                        { key: 'upload', label: 'Upload' },
-                        { key: 'external', label: 'External' },
-                      ] as const).map((t) => (
-                        <button
-                          key={t.key}
-                          type="button"
-                          onClick={() => {
-                            setMediaTab(t.key as typeof mediaTab);
-                            if (t.key === 'external') {
-                              // Always clear when switching into External tab
-                              setExternalUrl('');
-                              setExternalTosAccepted(false);
-                              // Reset any stale ingestion state so button can enable
-                              setIngestJobId(null);
-                              setIngestStatus(null);
-                              setIngestProgress(null);
-                              setIngestError(null);
-                            }
-                          }}
-                          className={`text-sm font-medium py-3 transition-colors border-b-2 ${
-                            mediaTab === t.key ? 'border-orange-500 text-gray-900 bg-orange-50' : 'border-transparent text-gray-600 hover:bg-gray-50'
-                          }`}
-                          role="tab"
-                          aria-selected={mediaTab === t.key}
-                        >
-                          {t.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Body */}
-                    <div className="p-5">
-                      {mediaTab === 'gallery' && (
-                        <>
-                          {/* Filter Pills */}
-                          <div className="flex gap-2 mb-4">
-                            {(['all','image','video'] as const).map((key) => (
-                              <button
-                                key={key}
-                                type="button"
-                                onClick={() => setMediaFilter(key)}
-                                className={`px-3 py-1.5 text-sm rounded-full border ${mediaFilter === key ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                              >
-                                {key === 'all' ? 'All' : key === 'image' ? 'Images' : 'Videos'}
-                              </button>
-                            ))}
-                          </div>
-
-                          {/* Gallery Placeholder */}
-                          <div className="min-h-[160px] flex items-center justify-center rounded-xl border border-dashed border-gray-300 bg-gray-50">
-                            <div className="text-sm text-gray-600">No items in your gallery yet.</div>
-                          </div>
-                        </>
-                      )}
-
-                      {mediaTab === 'upload' && (
-                        <div className="flex items-center justify-between gap-4">
-                          <div className="text-sm text-gray-600">
-                            Upload images or videos from your computer.
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            className="px-4 py-2 bg-gray-900 text-white rounded-full text-sm hover:bg-black"
-                          >
-                            Upload from your computer
-                          </button>
-                        </div>
-                      )}
-
-                      {mediaTab === 'external' && (
-<<<<<<< HEAD
-                        <div className="space-y-4">
-                          <div className="text-sm text-gray-600">
-                            Paste a URL to import video from YouTube, TikTok, Facebook, X or Reddit.
-                          </div>
-                          
-                          <div className="space-y-3">
-                            <input
-                              type="text"
-                              value={externalUrl}
-                              onChange={(e) => setExternalUrl(e.target.value)}
-                              placeholder="https://youtube.com/watch?v=..."
-                              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                            />
-                            
-                            <label className="flex items-start gap-2 text-xs text-gray-600">
-                              <input
-                                type="checkbox"
-                                checked={externalTosAccepted}
-                                onChange={(e) => setExternalTosAccepted(e.target.checked)}
-                                className="mt-0.5 rounded border-gray-300 text-orange-500 focus:ring-orange-500"
-                              />
-                              <span>
-                                I agree to the Terms of Service for video processing and understand that videos will be processed through external services.
-                              </span>
-                            </label>
-                            
-                            <button
-                              type="button"
-                              onClick={startExternalIngestion}
-                              disabled={!canAttachExternal}
-                              className="w-full px-4 py-2 bg-orange-500 text-white rounded-lg text-sm hover:bg-orange-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              {isIngestActive ? `Processing... ${ingestProgress || 0}%` : 'Import Video'}
-=======
-                        <div
-                          className="space-y-3"
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') {
-                              e.preventDefault();
-                              startExternalIngestion();
-                            }
-                          }}
-                        >
-                          <input
-                            type="url"
-                            inputMode="url"
-                            value={externalUrl}
-                            onChange={(e) => setExternalUrl(e.target.value)}
-                            placeholder="Transcribe or edit from Youtube, X, TikTok, FB etc"
-                            className="w-full rounded-lg border border-gray-300 px-3 py-2 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                            disabled={isIngestActive}
-                          />
-                          {/* TOS Acknowledgement */}
-                          <label className="flex items-start gap-2 text-sm text-gray-700 select-none">
-                            <input
-                              type="checkbox"
-                              checked={externalTosAccepted}
-                              onChange={(e) => setExternalTosAccepted(e.target.checked)}
-                              className="mt-0.5 h-4 w-4 rounded border-gray-300 text-orange-600 focus:ring-orange-500"
-                              disabled={isIngestActive}
-                            />
-                            <span>
-                              I confirm I have the right to use this content and agree to the
-                              {' '}<a href="/terms" target="_blank" rel="noopener noreferrer" className="text-orange-600 hover:text-orange-700 underline">Terms of Service</a>.
-                            </span>
-                          </label>
-
-                          {/* Inline validation hint */}
-                          {!canAttachExternal && (
-                            <div className="text-xs text-gray-600">
-                              {isIngestActive
-                                ? 'An ingestion is currently in progress. Please wait for it to finish or cancel it.'
-                                : (!urlTrimmed
-                                  ? 'Paste a URL to continue.'
-                                  : (!isExternalUrlValid
-                                    ? 'Enter a valid URL (include domain). Adding https:// may help.'
-                                    : (!externalTosAccepted
-                                      ? 'Please accept the Terms of Service to proceed.'
-                                      : '')))}
-                            </div>
-                          )}
-
-                          {/* Ingestion progress */}
-                          {ingestJobId && (
-                            <div className="space-y-1">
-                              <div className="text-sm text-gray-700">
-                                {ingestStatus ? `Status: ${ingestStatus}` : 'Starting...'}
-                                {ingestProgress !== null && ` (${ingestProgress}%)`}
-                              </div>
-                              <div className="w-full h-2 bg-gray-200 rounded-full overflow-hidden">
-                                <div
-                                  className="h-2 bg-orange-500 transition-all duration-300"
-                                  style={{ width: `${Math.max(0, Math.min(100, ingestProgress ?? 0))}%` }}
-                                />
-                              </div>
-                              {ingestError && <div className="text-sm text-red-600">{ingestError}</div>}
-                            </div>
-                          )}
-
-                          <div className="flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!canAttachExternal) return;
-                                startExternalIngestion();
-                              }}
-                              disabled={!canAttachExternal || (ingestJobId && isIngestActive)}
-                              aria-disabled={!canAttachExternal || (ingestJobId && isIngestActive)}
-                              className="px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                            >
-                              {ingestJobId ? 'Processing…' : 'Attach URL'}
->>>>>>> b238a09 (Fix video persistence and CORS issues)
-                            </button>
-                            
-                            {ingestError && (
-                              <div className="text-xs text-red-600 bg-red-50 p-2 rounded">
-                                {ingestError}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Actions */}
-              <div className="flex items-center justify-between">
-                <div className="text-sm text-gray-700">
-                  {content.length}/1000 characters
-                </div>
-                
-                <div className="flex gap-3">
+              {/* Media preview section */}
+              {cfUidPreview ? (
+                <div className="mb-2 relative">
+                  <CFVideoPlayer uid={cfUidPreview} autoPlay muted loop controls />
+                  <div className="mt-1 text-xs text-gray-700">Cloudflare Stream preview</div>
                   <button
                     type="button"
-                    onClick={onClose}
-                    className="px-6 py-2 text-gray-700 hover:bg-white/20 rounded-full transition-colors duration-200"
+                    onClick={() => { setCfUidPreview(null); setMediaType(null); }}
+                    className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full hover:bg-black/70"
                   >
-                    Cancel
+                    <X className="w-4 h-4" />
                   </button>
+                </div>
+              ) : mediaType === 'video' && mediaPreview ? (
+                <div className="relative">
+                  <video
+                    ref={previewVideoRef}
+                    src={mediaPreview}
+                    controls
+                    className="w-full rounded-lg bg-black"
+                    onLoadedMetadata={(e) => {
+                      const d = (e.currentTarget as HTMLVideoElement).duration;
+                      setVideoDuration(isFinite(d) ? d : 0);
+                      if (!videoTrimEnd && isFinite(d)) setVideoTrimEnd(d);
+                    }}
+                    onError={() => {
+                      // Retry once with cache-bust if base available
+                      if (mediaBaseUrlRef.current && videoLoadRetryRef.current < 2) {
+                        videoLoadRetryRef.current += 1;
+                        setMediaPreview(`${mediaBaseUrlRef.current}?t=${Date.now()}`);
+                      }
+                    }}
+                  />
+                </div>
+              ) : mediaType === 'image' && mediaPreview ? (
+                <div className="relative">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={mediaPreview} alt="preview" className="max-h-80 w-auto rounded-lg" />
+                </div>
+              ) : null}
+
+              {/* External ingest controls */}
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={externalUrl}
+                    onChange={(e) => setExternalUrl(e.target.value)}
+                    placeholder="Paste a video URL (YouTube, X, Reddit, etc.)"
+                    className="flex-1 border rounded-md px-3 py-2"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && canAttachExternal) {
+                        e.preventDefault();
+                        startExternalIngestion();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={!canAttachExternal}
+                    onClick={startExternalIngestion}
+                    className="px-4 py-2 rounded-md bg-blue-600 text-white disabled:opacity-50"
+                  >
+                    {isIngestActive ? 'Processing…' : 'Attach'}
+                  </button>
+                </div>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input type="checkbox" checked={externalTosAccepted} onChange={(e) => setExternalTosAccepted(e.target.checked)} />
+                  I have rights to ingest and repost this content.
+                </label>
+                {isIngestActive && (
+                  <div className="text-xs text-gray-600">{ingestStatus || 'processing'}{typeof ingestProgress === 'number' ? ` • ${Math.round(ingestProgress)}%` : ''}</div>
+                )}
+                {ingestError && <div className="text-sm text-red-600">{ingestError}</div>}
+              </div>
+
+              {/* Upload input (optional) */}
+              <div className="flex items-center gap-3">
+                <button type="button" className="px-3 py-2 rounded-md border" onClick={() => fileInputRef.current?.click()}>
+                  Upload image/video
+                </button>
+                <input ref={fileInputRef} type="file" accept="image/*,video/*" className="hidden" onChange={handleImageUpload} />
+              </div>
+
+              {/* Footer actions */}
+              <div className="flex items-center justify-between pt-2">
+                <div className="text-sm text-gray-700">{content.length}/1000 characters</div>
+                <div className="flex gap-3">
+                  <button type="button" onClick={onClose} className="px-6 py-2 text-gray-700 hover:bg-gray-100 rounded-full">Cancel</button>
                   <button
                     type="submit"
                     onClick={() => setSubmitRequested(true)}
                     disabled={(() => {
-                      const hasExternalIngestedVideo = !mediaFile && mediaType === 'video' && !!mediaBaseUrlRef.current;
-                      return ((!content.trim() && !mediaFile && !audioBlob && !selectedGifUrl && !externalUrl.trim() && !hasExternalIngestedVideo) || isPosting || isUploading);
+                      const hasExt = !mediaFile && mediaType === 'video' && !!mediaBaseUrlRef.current;
+                      return ((!content.trim() && !mediaFile && !audioBlob && !selectedGifUrl && !externalUrl.trim() && !hasExt) || isPosting || isUploading);
                     })()}
-                    className="px-6 py-2 bg-gradient-to-r from-orange-400 to-red-500 text-white rounded-full font-medium hover:from-orange-500 hover:to-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+                    className="px-6 py-2 bg-gradient-to-r from-orange-400 to-red-500 text-white rounded-full font-medium hover:from-orange-500 hover:to-red-600 disabled:opacity-50"
                   >
-                    {isPosting ? 'Posting...' : 'Post'}
+                    {isPosting ? 'Posting…' : 'Post'}
                   </button>
                 </div>
               </div>
             </form>
           </div>
         </div>
-      </div>
-      
-      {ingestError && <div className="text-sm text-red-600">{ingestError}</div>}
+      )}
 
-      {/* Audio Recorder Modal */}
-      {showAudioRecorder && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
-          <div className="relative bg-white rounded-2xl p-6 max-w-md w-full">
-            <AudioRecorder
-              onAudioRecorded={handleAudioRecorded}
-              onCancel={() => setShowAudioRecorder(false)}
-            />
+        {/* Audio Recorder Modal */}
+        {showAudioRecorder && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+            <div className="relative bg-white rounded-2xl p-6 max-w-md w-full">
+              <AudioRecorder onAudioRecorded={handleAudioRecorded} onCancel={() => setShowAudioRecorder(false)} />
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      
-
-      {/* Toast */}
-      {showToast && (
-        <Toast
-          message={toastMessage}
-          type={toastType}
-          isVisible={showToast}
-          onClose={() => setShowToast(false)}
-        />
-      )}
-    </>
-  );
-}
+        {/* Toast */}
+        {showToast && (
+          <Toast
+            message={toastMessage}
+            type={toastType}
+            isVisible={showToast}
+            onClose={() => setShowToast(false)}
+          />
+        )}
+      </>
+    );
+  }

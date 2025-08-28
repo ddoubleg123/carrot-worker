@@ -1,10 +1,11 @@
 type Search = { jobId?: string; src?: string };
 
-export default function Home({ searchParams }: { searchParams: Search }) {
+export default async function Home({ searchParams }: { searchParams: Promise<Search> }) {
+  const params = await searchParams;
   const worker = process.env.NEXT_PUBLIC_WORKER_URL || 'http://127.0.0.1:8080';
   const src =
-    (searchParams?.src && decodeURIComponent(searchParams.src)) ||
-    (searchParams?.jobId ? `${worker}/media/ingest/${searchParams.jobId}.mp4` : undefined);
+    (params?.src && decodeURIComponent(params.src)) ||
+    (params?.jobId ? `${worker}/media/ingest/${params.jobId}.mp4` : undefined);
 
   return (
     <main style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',padding:24,background:'#0b0f17',color:'#e6edf3'}}>

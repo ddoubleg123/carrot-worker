@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Transcription API Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; }
+        button { padding: 10px 20px; margin: 10px 5px; background: #007cba; color: white; border: none; border-radius: 4px; cursor: pointer; }
+        button:hover { background: #005a87; }
+        .result { margin: 20px 0; padding: 15px; background: #f5f5f5; border-radius: 4px; white-space: pre-wrap; }
+        input, textarea { padding: 8px; margin: 5px 0; width: 400px; }
+        .success { background: #d4edda; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; border: 1px solid #f5c6cb; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 Transcription API Test</h1>
+        <p>Testing the Next.js transcription API on localhost:3005</p>
+        
+        <div>
+            <h3>Test GET Request</h3>
+            <input type="text" id="getPostId" placeholder="Enter post ID" value="test-123">
+            <button onclick="testGET()">Test GET /api/transcribe</button>
+        </div>
+        
+        <div>
+            <h3>Test POST Request</h3>
+            <input type="text" id="postId" placeholder="Post ID" value="test-post-456">
+            <input type="text" id="audioUrl" placeholder="Audio URL" value="https://example.com/test.mp3">
+            <button onclick="testPOST()">Test POST /api/transcribe</button>
+        </div>
+        
+        <div>
+            <h3>Test Health Check</h3>
+            <button onclick="testHealth()">Test Server Health</button>
+        </div>
+        
+        <div id="result" class="result" style="display: none;"></div>
+    </div>
+    
+    <script>
+        async function testGET() {
+            const postId = document.getElementById('getPostId').value;
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'result';
+                resultDiv.innerHTML = '⏳ Testing GET request...';
+                
+                const response = await fetch(`http://localhost:3005/api/transcribe?postId=${postId}`, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const data = await response.json();
+                
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `✅ GET Request Success
+Status: ${response.status}
+Response: ${JSON.stringify(data, null, 2)}`;
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `❌ GET Request Failed
+Error: ${error.message}`;
+            }
+        }
+        
+        async function testPOST() {
+            const postId = document.getElementById('postId').value;
+            const audioUrl = document.getElementById('audioUrl').value;
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'result';
+                resultDiv.innerHTML = '⏳ Testing POST request...';
+                
+                const response = await fetch('http://localhost:3005/api/transcribe', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        postId: postId,
+                        audioUrl: audioUrl,
+                        mediaType: 'audio'
+                    })
+                });
+                
+                const data = await response.json();
+                
+                resultDiv.className = 'result success';
+                resultDiv.innerHTML = `✅ POST Request Success
+Status: ${response.status}
+Response: ${JSON.stringify(data, null, 2)}`;
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `❌ POST Request Failed
+Error: ${error.message}`;
+            }
+        }
+        
+        async function testHealth() {
+            const resultDiv = document.getElementById('result');
+            
+            try {
+                resultDiv.style.display = 'block';
+                resultDiv.className = 'result';
+                resultDiv.innerHTML = '⏳ Testing server health...';
+                
+                const response = await fetch('http://localhost:3005/', {
+                    method: 'GET'
+                });
+                
+                if (response.ok) {
+                    resultDiv.className = 'result success';
+                    resultDiv.innerHTML = `✅ Server is running
+Status: ${response.status}
+Server responded successfully`;
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.innerHTML = `⚠️ Server responded with status: ${response.status}`;
+                }
+                
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.innerHTML = `❌ Server Health Check Failed
+Error: ${error.message}
+Make sure Next.js server is running on port 3005`;
+            }
+        }
+    </script>
+</body>
+</html>

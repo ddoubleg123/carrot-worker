@@ -114,7 +114,6 @@ function logObjectSize(name: string, obj: any) {
 const adapter = patchAdapter(PrismaAdapter(prisma));
 
 export const authOptions = {
-  // NOTE: Removed adapter when using JWT strategy to prevent OAuthAccountNotLinked errors
   // adapter,
   cookies: {
     sessionToken: {
@@ -149,48 +148,32 @@ export const authOptions = {
 
   pages: {
     signIn: '/login',
-    newUser: '/onboarding',
+    newUser: '/home',
   },
   callbacks: {
+    async redirect({ url, baseUrl }: { url: string; baseUrl: string }) {
+      // Always redirect to /home after successful OAuth login
+      if (url === baseUrl || url === `${baseUrl}/`) {
+        return `${baseUrl}/home`;
+      }
+      // Allow relative callback URLs
+      if (url.startsWith('/')) {
+        return `${baseUrl}${url}`;
+      }
+      // Allow callback URLs on the same origin
+      if (new URL(url).origin === baseUrl) {
+        return url;
+      }
+      return `${baseUrl}/home`;
+    },
     async signIn({ user, account, profile }: { user: any; account: any; profile?: any }) {
       console.log('[NextAuth][signIn] === SIGNIN CALLBACK DEBUG ===');
       console.log('[NextAuth][signIn] user:', JSON.stringify(user, null, 2));
       console.log('[NextAuth][signIn] account:', JSON.stringify(account, null, 2));
       console.log('[NextAuth][signIn] profile:', JSON.stringify(profile, null, 2));
 
-      // Only handle OAuth providers (Google)
-      if (account?.provider === 'google' && user?.email) {
-        try {
-          // Check if user already exists
-          const existingUser = await prisma.user.findUnique({
-            where: { email: user.email }
-          });
-
-          if (!existingUser) {
-            console.log('[NextAuth][signIn] Creating new user for:', user.email);
-            
-            // Create new user in database
-            const newUser = await prisma.user.create({
-              data: {
-                email: user.email,
-                name: user.name || null,
-                image: user.image || null,
-                username: null, // Will be set during onboarding
-                profilePhoto: null,
-                isOnboarded: false,
-                emailVerified: new Date(), // Google OAuth users are email verified
-              }
-            });
-            
-            console.log('[NextAuth][signIn] Created user:', JSON.stringify(newUser, null, 2));
-          } else {
-            console.log('[NextAuth][signIn] User already exists:', existingUser.email);
-          }
-        } catch (error) {
-          console.error('[NextAuth][signIn] Error creating/fetching user, allowing sign-in anyway:', error);
-          // Do NOT block sign-in. We'll ensure user exists in session callback.
-        }
-      }
+      // Skip database operations when adapter is disabled
+      console.log('[NextAuth][signIn] Skipping database operations (adapter disabled)');
 
       console.log('[NextAuth][signIn] === END SIGNIN DEBUG ===');
       return true; // Allow sign in
@@ -266,86 +249,44 @@ export const authOptions = {
         return session;
       }
 
-      // Fetch user data from database to get isOnboarded status and ALL user data
+      // Fetch user data from database to get uploaded profile photo
       let userData: any = null;
       try {
+        const { PrismaClient } = await import('@prisma/client');
+        const prisma = new PrismaClient({
+          datasources: {
+            db: {
+              url: resolvedDbUrl || "file:./prisma/dev.db"
+            }
+          }
+        });
         userData = await prisma.user.findUnique({
           where: { email: token.email as string },
           select: { 
-            id: true,
-            email: true, 
-            username: true,
-            profilePhoto: true,
+            id: true, 
+            username: true, 
+            profilePhoto: true, 
             image: true,
             isOnboarded: true 
           }
         });
-        console.log('[NextAuth][session] Database query for email:', token.email);
-        console.log('[NextAuth][session] Database result:', JSON.stringify(userData, null, 2));
-
-        // CRITICAL SECURITY CHECK: Verify email consistency
-        if (userData && userData.email !== token.email) {
-          console.warn('[NextAuth][session] Email mismatch (token vs db); continuing with token email');
-        }
-      } catch (error) {
-        console.log('[NextAuth][session] Database query failed (non-fatal):', error);
-      }
-
-      // Ensure a DB user exists. If missing, create it now (non-blocking of session creation)
-      if (!userData) {
-        try {
-          console.log('[NextAuth][session] No user found, creating one for email:', token.email);
-          const created = await prisma.user.create({
-            data: {
-              email: token.email as string,
-              name: undefined,
-              image: (token.image as string | undefined) || null,
-              username: null,
-              profilePhoto: (token.profilePhoto as string | undefined) || null,
-              isOnboarded: false,
-              emailVerified: new Date(),
-            },
-            select: {
-              id: true,
-              email: true,
-              username: true,
-              profilePhoto: true,
-              image: true,
-              isOnboarded: true,
-            }
+        
+        // Sync OAuth image to database if missing
+        if (userData && !userData.image && (token.picture || token.image)) {
+          await prisma.user.update({
+            where: { email: token.email as string },
+            data: { image: token.picture || token.image }
           });
-          userData = created;
-          console.log('[NextAuth][session] Created user during session callback:', JSON.stringify(created, null, 2));
-        } catch (createErr) {
-          console.error('[NextAuth][session] Failed to create user during session callback:', createErr);
+          userData.image = token.picture || token.image;
         }
+        await prisma.$disconnect();
+        console.log('[NextAuth][session] Database user found:', userData);
+      } catch (error) {
+        console.log('[NextAuth][session] Database query failed:', error);
       }
 
-      // Optional bypass: auto-mark certain emails as onboarded via env var SKIP_ONBOARD_EMAILS
-      try {
-        const skip = (process.env.SKIP_ONBOARD_EMAILS || '')
-          .split(',')
-          .map(s => s.trim().toLowerCase())
-          .filter(Boolean);
-        const emailLc = String(token.email || '').toLowerCase();
-        if (emailLc && skip.includes(emailLc)) {
-          console.log('[NextAuth][session] SKIP_ONBOARD_EMAILS matched; forcing isOnboarded=true for', emailLc);
-          if (userData && userData.isOnboarded !== true) {
-            try {
-              const updated = await prisma.user.update({
-                where: { email: token.email as string },
-                data: { isOnboarded: true },
-                select: { id: true, isOnboarded: true }
-              });
-              userData.isOnboarded = updated.isOnboarded;
-              console.log('[NextAuth][session] Updated user isOnboarded in DB for', emailLc);
-            } catch (e) {
-              console.warn('[NextAuth][session] Failed to update isOnboarded in DB (non-fatal):', e);
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[NextAuth][session] Error processing SKIP_ONBOARD_EMAILS:', e);
+      if (!userData) {
+        console.log('[NextAuth][session] No database user found, using token data only');
       }
 
       // CRITICAL: Always use token email as source of truth, never database email
@@ -354,9 +295,9 @@ export const authOptions = {
         email: token.email as string, // ALWAYS use token email for security
         username: userData?.username || token.username as string | undefined,
         profilePhoto: userData?.profilePhoto || token.profilePhoto as string | undefined,
-        image: userData?.image || token.image as string | undefined,
+        image: token.picture || token.image as string | undefined, // Keep OAuth image for fallback
         emailVerified: null as Date | null,
-        isOnboarded: userData?.isOnboarded || false,
+        isOnboarded: userData?.isOnboarded ?? false, // Force onboarding since database was reset
       };
 
       // Force isOnboarded=true in session if SKIP_ONBOARD_EMAILS matched
