@@ -1,6 +1,5 @@
 [build]
 builder = "dockerfile"
-workingDirectory = "worker"
 
 [deploy]
 startCommand = "npm start"

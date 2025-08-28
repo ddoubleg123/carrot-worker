@@ -5,7 +5,8 @@ on:
     inputs:
       bucket:
         description: GCS bucket (e.g., involuted-river-466315-p0.firebasestorage.app)
-        required: true
+        required: false
+        default: involuted-river-466315-p0.firebasestorage.app
       corsFile:
         description: Path to CORS JSON inside repo
         required: false
