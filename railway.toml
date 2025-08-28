@@ -1,6 +1,7 @@
 [build]
 builder = "dockerfile"
 dockerfilePath = "worker/Dockerfile"
+workingDirectory = "worker"
 
 [deploy]
 startCommand = "npm start"
