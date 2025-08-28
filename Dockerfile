@@ -1,4 +1,4 @@
-﻿FROM node:20-bookworm-slim
+FROM node:20-bookworm-slim
 
 WORKDIR /app
 
@@ -40,4 +40,3 @@ USER node
 
 # Start the application
 CMD ["node", "src/index.js"]
-
