@@ -74,12 +74,20 @@ node_modules/
 
 # dotenv environment variables file
 .env
+.env.*
 
 # Local environment overrides (do not commit secrets)
 .env.local
 carrot/.env.local
-.env.local.bak
+.env.local.*
 *.env.bak
+*.env.backup
+**/service-account*.json
+**/*private-key*
+**/*firebase-adminsdk*
+
+# Temporarily ignore root package.json to force Railway Docker build
+package.json
 
 # dataconnect generated files
 .dataconnect
