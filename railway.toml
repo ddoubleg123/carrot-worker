@@ -1,6 +1,5 @@
 [build]
 builder = "dockerfile"
-dockerfilePath = "worker/Dockerfile"
 workingDirectory = "worker"
 
 [deploy]
