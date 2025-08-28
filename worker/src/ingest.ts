@@ -1,4 +1,6 @@
 import { Storage } from '@google-cloud/storage';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getStorage } from 'firebase-admin/storage';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
@@ -26,10 +28,16 @@ export type TrimRequest = {
 const CALLBACK_URL = (process.env.INGEST_CALLBACK_URL || 'http://localhost:3005/api/ingest/callback').replace(/\/$/, '');
 const CALLBACK_SECRET = process.env.INGEST_CALLBACK_SECRET || 'dev_ingest_secret';
 const GCS_BUCKET = process.env.GCS_BUCKET || '';
+const FIREBASE_STORAGE_BUCKET = process.env.FIREBASE_STORAGE_BUCKET || '';
 const TRIM_SECONDS = Math.max(0, Number(process.env.INGEST_TRIM_SECONDS || '0'));
 const WORKER_PUBLIC_URL = (process.env.WORKER_PUBLIC_URL || 'http://localhost:8080').replace(/\/$/, '');
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
+
+// Initialize Firebase Admin if not already done
+if (!getApps().length) {
+  initializeApp();
+}
 
 function execCmd(cmd: string, args: string[], cwd?: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -93,18 +101,26 @@ export async function runTrim(req: TrimRequest) {
   }, 4 * 60 * 1000);
 
   try {
-    console.log('[worker] Trim start', { jobId, sourceUrl: req.sourceUrl, start, end: hasEnd ? end : undefined });
-    await sendCallback(jobId, { status: 'downloading', progress: 10, postId: req.postId });
+    console.log('[worker] Trim request started', { jobId, sourceUrl: req.sourceUrl, startSec: req.startSec, endSec: req.endSec });
 
-    // Transcode/trim directly from URL; ffmpeg can read http(s). Use veryfast baseline output.
-    let transcodeProgress = 20;
-    const keepalive = setInterval(() => {
-      transcodeProgress = Math.min(transcodeProgress + 4, 85);
-      sendCallback(jobId, { status: 'transcoding', progress: transcodeProgress, postId: req.postId });
-    }, 2000);
+    // Add timeout protection for Cloud Run
+    const OPERATION_TIMEOUT = 50 * 60 * 1000; // 50 minutes
+    const timeoutPromise = new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error(`Trim operation timed out after 50 minutes`)), OPERATION_TIMEOUT)
+    );
 
-    const ffArgs = [
-      '-y',
+    try {
+      await Promise.race([
+        performTrimOperation(req, jobId, req.sourceUrl, req.startSec, req.endSec),
+        timeoutPromise
+      ]);
+    } catch (error) {
+      console.error('[worker] Trim operation failed', { jobId, error: error?.message });
+      await sendCallback(jobId, { 
+        status: 'failed', 
+        progress: 0, 
+        error: error?.message || 'Unknown error',
+        postId: req.postId 
       ...(start ? ['-ss', String(start)] : []),
       '-i', req.sourceUrl,
       ...(hasEnd ? ['-to', String(end)] : []),
@@ -124,7 +140,13 @@ export async function runTrim(req: TrimRequest) {
     await sendCallback(jobId, { status: 'uploading', progress: 90, postId: req.postId });
     let mediaUrl = '';
     let cfUid: string | undefined;
-    if (GCS_BUCKET) {
+    if (FIREBASE_STORAGE_BUCKET) {
+      const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+      const dest = `ingest/${jobId}.mp4`;
+      await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+      await bucket.file(dest).makePublic().catch(() => {});
+      mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+    } else if (GCS_BUCKET) {
       const storage = new Storage();
       const bucket = storage.bucket(GCS_BUCKET);
       const dest = `ingest/${jobId}.mp4`;
@@ -432,7 +454,13 @@ export async function runIngest(req: IngestRequest) {
     await sendCallback(jobId, { status: 'uploading', progress: 90 });
     let mediaUrl = '';
     let cfUid: string | undefined;
-    if (GCS_BUCKET) {
+    if (FIREBASE_STORAGE_BUCKET) {
+      const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+      const dest = `ingest/${jobId}.mp4`;
+      await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+      await bucket.file(dest).makePublic().catch(() => {});
+      mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+    } else if (GCS_BUCKET) {
       const storage = new Storage();
       const bucket = storage.bucket(GCS_BUCKET);
       const dest = `ingest/${jobId}.mp4`;

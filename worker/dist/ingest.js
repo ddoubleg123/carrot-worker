@@ -1,4 +1,6 @@
 import { Storage } from '@google-cloud/storage';
+import { initializeApp, getApps } from 'firebase-admin/app';
+import { getStorage } from 'firebase-admin/storage';
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs/promises';
@@ -8,10 +10,15 @@ import fetch from 'node-fetch';
 const CALLBACK_URL = (process.env.INGEST_CALLBACK_URL || 'http://localhost:3005/api/ingest/callback').replace(/\/$/, '');
 const CALLBACK_SECRET = process.env.INGEST_CALLBACK_SECRET || 'dev_ingest_secret';
 const GCS_BUCKET = process.env.GCS_BUCKET || '';
+const FIREBASE_STORAGE_BUCKET = process.env.FIREBASE_STORAGE_BUCKET || '';
 const TRIM_SECONDS = Math.max(0, Number(process.env.INGEST_TRIM_SECONDS || '0'));
 const WORKER_PUBLIC_URL = (process.env.WORKER_PUBLIC_URL || 'http://localhost:8080').replace(/\/$/, '');
 const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
+// Initialize Firebase Admin if not already done
+if (!getApps().length) {
+    initializeApp();
+}
 function execCmd(cmd, args, cwd) {
     return new Promise((resolve, reject) => {
         const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], cwd });
@@ -102,7 +109,14 @@ export async function runTrim(req) {
         await sendCallback(jobId, { status: 'uploading', progress: 90, postId: req.postId });
         let mediaUrl = '';
         let cfUid;
-        if (GCS_BUCKET) {
+        if (FIREBASE_STORAGE_BUCKET) {
+            const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+            const dest = `ingest/${jobId}.mp4`;
+            await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+            await bucket.file(dest).makePublic().catch(() => { });
+            mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+        }
+        else if (GCS_BUCKET) {
             const storage = new Storage();
             const bucket = storage.bucket(GCS_BUCKET);
             const dest = `ingest/${jobId}.mp4`;
@@ -235,7 +249,7 @@ async function sendCallback(jobId, payload) {
         return;
     }
     try {
-        await fetch(CALLBACK_URL, {
+        const resp = await fetch(CALLBACK_URL, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -243,6 +257,13 @@ async function sendCallback(jobId, payload) {
             },
             body: JSON.stringify({ id: jobId, ...payload }),
         });
+        if (!resp.ok) {
+            const txt = await resp.text().catch(() => '');
+            console.warn('[worker] Callback non-OK response', { jobId, status: resp.status, body: txt.slice(0, 300) });
+        }
+        else {
+            console.log('[worker] Callback sent', { jobId, status: payload?.status, progress: payload?.progress });
+        }
     }
     catch (e) {
         console.warn('[worker] Callback POST failed (best-effort)', e);
@@ -417,7 +438,14 @@ export async function runIngest(req) {
         await sendCallback(jobId, { status: 'uploading', progress: 90 });
         let mediaUrl = '';
         let cfUid;
-        if (GCS_BUCKET) {
+        if (FIREBASE_STORAGE_BUCKET) {
+            const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+            const dest = `ingest/${jobId}.mp4`;
+            await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+            await bucket.file(dest).makePublic().catch(() => { });
+            mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+        }
+        else if (GCS_BUCKET) {
             const storage = new Storage();
             const bucket = storage.bucket(GCS_BUCKET);
             const dest = `ingest/${jobId}.mp4`;

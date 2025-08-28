@@ -41,7 +41,7 @@ try {
     }
 }
 catch { }
-// 2) Relax YT_DLP_PATH startup guard so rogue instances without env cannot bind :8080
+// 2) Enforce YT_DLP_PATH presence so rogue instances without env cannot bind :8080
 if (!process.env.YT_DLP_PATH) {
     console.warn('STARTUP_GUARD: YT_DLP_PATH is not set. Continuing to start server so health checks work; ingest will fail without it.');
 }
@@ -54,10 +54,11 @@ app.use('/media', express.static(DATA_DIR));
 app.get('/healthz', (_req, res) => {
     res.status(200).send('ok');
 });
-// Accept root and aliases for health checks
+// Accept root as a health alias to satisfy default probes
 app.get('/', (_req, res) => {
     res.status(200).send('ok');
 });
+// Aliases for health checks
 app.get('/livez', (_req, res) => {
     res.status(200).send('ok');
 });

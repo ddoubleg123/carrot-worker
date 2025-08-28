@@ -4,6 +4,36 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { runIngest, IngestRequest, runTrim, TrimRequest } from './ingest.js';
+import * as functions from 'firebase-functions';
+
+// Error handling and monitoring
+process.on('uncaughtException', (error) => {
+  console.error('[FATAL] Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+// Health check endpoint for Cloud Run
+function createHealthCheck() {
+  return (req: express.Request, res: express.Response) => {
+    const healthCheck = {
+      uptime: process.uptime(),
+      timestamp: Date.now(),
+      status: 'OK',
+      memory: process.memoryUsage(),
+      environment: {
+        nodeVersion: process.version,
+        platform: process.platform,
+        arch: process.arch
+      }
+    };
+    res.status(200).json(healthCheck);
+  };
+}
 
 const app = express();
 
@@ -260,23 +290,74 @@ app.get('/ingest/test', async (req, res) => {
   return res.status(202).json({ accepted: true, jobId: id });
 });
 
-// Basic process error logging for easier troubleshooting
+// Enhanced error logging for Cloud Run
 process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT_EXCEPTION', err?.stack || err);
-});
-process.on('unhandledRejection', (reason: unknown) => {
-  console.error('UNHANDLED_REJECTION', reason);
+  console.error('[FATAL] UNCAUGHT_EXCEPTION', {
+    error: err?.message,
+    stack: err?.stack,
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage()
+  });
+  process.exit(1);
 });
 
-const port = Number(process.env.PORT || 8080);
-const host = process.env.HOST || '0.0.0.0';
-const server = app.listen(port, host, () => {
-  console.log(`Ingest worker listening on :${port}`);
-  console.log('Env summary', {
-    HOST: host,
-    WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
-    INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
-    HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_CALLBACK_SECRET),
+process.on('unhandledRejection', (reason: unknown) => {
+  console.error('[FATAL] UNHANDLED_REJECTION', {
+    reason: reason,
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage()
+  });
+  process.exit(1);
+});
+
+// Health check endpoint for Cloud Run
+app.get('/health', (req, res) => {
+  const healthCheck = {
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString(),
+    memory: process.memoryUsage(),
+    environment: {
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      firebaseConfigured: !!process.env.FIREBASE_STORAGE_BUCKET
+    }
+  };
+  res.status(200).json(healthCheck);
+});
+
+// Timeout protection for long-running operations
+const CLOUD_RUN_TIMEOUT = 55 * 60 * 1000; // 55 minutes (Cloud Run max is 60)
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number = CLOUD_RUN_TIMEOUT): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error(`Operation timed out after ${timeoutMs}ms`)), timeoutMs)
+    )
+  ]);
+}
+
+// Export as Firebase Function
+export const ingestWorker = functions
+  .runWith({
+    timeoutSeconds: 540,
+    memory: '4GB'
+  })
+  .https.onRequest(app);
+
+// For local development
+if (process.env.NODE_ENV !== 'production') {
+  const port = Number(process.env.PORT || 8080);
+  const host = process.env.HOST || '0.0.0.0';
+  const server = app.listen(port, host, () => {
+    console.log(`Ingest worker listening on :${port}`);
+    console.log('Env summary', {
+      HOST: host,
+      WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
+      INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
+      HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_CALLBACK_SECRET),
     GCS_BUCKET: process.env.GCS_BUCKET,
     HAS_GOOGLE_APPLICATION_CREDENTIALS: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),
     YT_DLP_PATH: process.env.YT_DLP_PATH,
@@ -289,15 +370,16 @@ const server = app.listen(port, host, () => {
   } else {
     console.log('Cookie mode: none');
   }
-});
-server.on('listening', () => {
-  try {
-    const addr = server.address();
-    console.log('Server bound address', addr);
-  } catch (e) {
-    console.log('Server bound address (unavailable)');
-  }
-});
-server.on('error', (err) => {
-  console.error('SERVER_LISTEN_ERROR', err?.stack || err);
-});
+  });
+  server.on('listening', () => {
+    try {
+      const addr = server.address();
+      console.log('Server bound address', addr);
+    } catch (e) {
+      console.log('Server bound address (unavailable)');
+    }
+  });
+  server.on('error', (err) => {
+    console.error('SERVER_LISTEN_ERROR', err?.stack || err);
+  });
+}
