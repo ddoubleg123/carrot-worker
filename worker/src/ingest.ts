@@ -1,5 +1,6 @@
 import { Storage } from '@google-cloud/storage';
 import { initializeApp, getApps } from 'firebase-admin/app';
+import { credential } from 'firebase-admin';
 import { getStorage } from 'firebase-admin/storage';
 import { spawn } from 'child_process';
 import path from 'path';
@@ -36,7 +37,23 @@ const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 
 // Initialize Firebase Admin if not already done
 if (!getApps().length) {
-  initializeApp();
+  // Use individual environment variables if available
+  const firebaseConfig = process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY ? {
+    projectId: process.env.FIREBASE_PROJECT_ID,
+    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+  } : undefined;
+  
+  console.log('[ingest] Initializing Firebase Admin with config:', {
+    hasProjectId: !!firebaseConfig?.projectId,
+    hasClientEmail: !!firebaseConfig?.clientEmail,
+    hasPrivateKey: !!firebaseConfig?.privateKey,
+    storageBucket: FIREBASE_STORAGE_BUCKET
+  });
+  
+  initializeApp({
+    credential: firebaseConfig ? credential.cert(firebaseConfig) : undefined
+  });
 }
 
 function execCmd(cmd: string, args: string[], cwd?: string): Promise<void> {
@@ -77,155 +94,142 @@ function execCmd(cmd: string, args: string[], cwd?: string): Promise<void> {
 // Trim an existing video into a new clip and make it available similarly to ingest output
 export async function runTrim(req: TrimRequest) {
   const jobId = req.id;
-  const workdir = path.join(process.cwd(), 'tmp', `trim-${jobId}`);
+  const workdir = path.join('/tmp', `trim_${jobId}`);
   await fs.mkdir(workdir, { recursive: true });
-  const outLocalDir = path.join(process.cwd(), 'data', 'ingest');
-  await fs.mkdir(outLocalDir, { recursive: true }).catch(() => {});
-  const finalLocalPath = path.join(outLocalDir, `${jobId}.mp4`);
-  const outPath = GCS_BUCKET ? path.join(workdir, 'output.mp4') : finalLocalPath;
-
-  // Normalize start/end
-  const start = Math.max(0, Number(req.startSec || 0));
-  const end = Number(req.endSec || 0);
-  const hasEnd = !Number.isNaN(end) && end > start;
-
-  // Watchdog to avoid stuck jobs
-  const watchdog = setTimeout(async () => {
-    console.warn('[worker] Trim watchdog timeout; marking failed', { jobId });
-    await sendCallback(jobId, {
-      status: 'failed',
-      progress: 0,
-      error: 'Trim timeout. Check source availability.'
-    });
-    try { await fs.rm(workdir, { recursive: true, force: true }); } catch {}
-  }, 4 * 60 * 1000);
+  
+  const watchdog = setTimeout(() => {
+    console.error('[worker] Trim watchdog timeout', { jobId });
+  }, 60 * 60 * 1000); // 1 hour
 
   try {
-    console.log('[worker] Trim request started', { jobId, sourceUrl: req.sourceUrl, startSec: req.startSec, endSec: req.endSec });
-
-    // Add timeout protection for Cloud Run
-    const OPERATION_TIMEOUT = 50 * 60 * 1000; // 50 minutes
-    const timeoutPromise = new Promise<never>((_, reject) => 
-      setTimeout(() => reject(new Error(`Trim operation timed out after 50 minutes`)), OPERATION_TIMEOUT)
-    );
+    console.log('[worker] Starting trim', { jobId, sourceUrl: req.sourceUrl, startSec: req.startSec, endSec: req.endSec });
+    
+    await sendCallback(jobId, { status: 'processing', progress: 10, postId: req.postId });
+    
+    const outPath = path.join(workdir, `${jobId}.mp4`);
+    const start = req.startSec;
+    const end = req.endSec;
+    const hasEnd = typeof end === 'number' && end > 0;
+    
+    // Keep-alive interval
+    const keepalive = setInterval(() => {
+      console.log('[worker] Trim keep-alive', { jobId });
+    }, 30000);
 
     try {
-      await Promise.race([
-        performTrimOperation(req, jobId, req.sourceUrl, req.startSec, req.endSec),
-        timeoutPromise
-      ]);
-    } catch (error) {
-      console.error('[worker] Trim operation failed', { jobId, error: error?.message });
-      await sendCallback(jobId, { 
-        status: 'failed', 
-        progress: 0, 
-        error: error?.message || 'Unknown error',
-        postId: req.postId 
-      ...(start ? ['-ss', String(start)] : []),
-      '-i', req.sourceUrl,
-      ...(hasEnd ? ['-to', String(end)] : []),
-      // Prefer stream copy when possible for speed; fall back to encode in case of errors handled by ffmpeg itself
-      // Here we encode to ensure broad compatibility similar to ingest output
-      '-c:v', 'libx264',
-      '-preset', 'veryfast',
-      '-profile:v', 'baseline',
-      '-level', '3.1',
-      '-c:a', 'aac',
-      '-movflags', '+faststart',
-      outPath,
-    ];
-    await execCmd('ffmpeg', ffArgs).finally(() => clearInterval(keepalive));
-    console.log('[worker] Trim transcode complete', { jobId, outPath });
+      // Fallback to ffmpeg
+      const ffArgs = [
+        '-y',
+        ...(start ? ['-ss', String(start)] : []),
+        '-i', req.sourceUrl,
+        ...(hasEnd ? ['-to', String(end)] : []),
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-profile:v', 'baseline',
+        '-level', '3.1',
+        '-c:a', 'aac',
+        '-movflags', '+faststart',
+        outPath,
+      ];
+      await execCmd('ffmpeg', ffArgs).finally(() => clearInterval(keepalive));
+      console.log('[worker] Trim transcode complete', { jobId, outPath });
 
-    await sendCallback(jobId, { status: 'uploading', progress: 90, postId: req.postId });
-    let mediaUrl = '';
-    let cfUid: string | undefined;
-    if (FIREBASE_STORAGE_BUCKET) {
-      const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
-      const dest = `ingest/${jobId}.mp4`;
-      await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
-      await bucket.file(dest).makePublic().catch(() => {});
-      mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
-    } else if (GCS_BUCKET) {
-      const storage = new Storage();
-      const bucket = storage.bucket(GCS_BUCKET);
-      const dest = `ingest/${jobId}.mp4`;
-      await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
-      await bucket.file(dest).makePublic().catch(() => {});
-      mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
-    } else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
-      // For parity with ingest: upload to Cloudflare Stream if configured
-      const cfResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/stream/direct_upload`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${CF_API_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ requireSignedURLs: false, thumbnailTimestampPct: 0 }),
-      });
-      if (!cfResp.ok) {
-        const t = await cfResp.text().catch(() => '');
-        throw new Error(`Cloudflare direct_upload create failed (trim): ${cfResp.status} ${t}`);
-      }
-      const cfJson: any = await cfResp.json();
-      const uploadURL: string | undefined = cfJson?.result?.uploadURL;
-      cfUid = cfJson?.result?.uid;
-      if (!uploadURL || !cfUid) {
-        throw new Error('Cloudflare direct_upload response missing uploadURL or uid (trim)');
-      }
-      let Tus: TusTypes | null = null;
-      try {
-        const mod: any = await import('tus-js-client');
-        Tus = { Upload: mod.Upload, NodeHttpStack: mod.NodeHttpStack };
-      } catch (e) {
-        throw new Error('tus-js-client is required for Cloudflare uploads but is not installed.');
-      }
-      const stat = fsSync.statSync(outPath);
-      const stream = fsSync.createReadStream(outPath);
-      await new Promise<void>((resolve, reject) => {
-        const uploader = new (Tus as TusTypes).Upload(stream as any, {
-          endpoint: uploadURL,
-          uploadSize: stat.size,
-          retryDelays: [500, 1000, 2000, 5000],
-          httpStack: new (Tus as TusTypes).NodeHttpStack(),
-          metadata: { filename: `${jobId}.mp4`, filetype: 'video/mp4' },
-          onError: (error: any) => reject(error),
-          onSuccess: () => resolve(),
-          onProgress: (bytesSent: number, bytesTotal: number) => {
-            const p = Math.max(90, Math.min(99, Math.floor((bytesSent / bytesTotal) * 100)));
-            sendCallback(jobId, { status: 'uploading', progress: p, postId: req.postId });
+      await sendCallback(jobId, { status: 'uploading', progress: 90, postId: req.postId });
+      let mediaUrl = '';
+      let cfUid: string | undefined;
+      
+      if (FIREBASE_STORAGE_BUCKET) {
+        const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+        const dest = `ingest/${jobId}.mp4`;
+        await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+        await bucket.file(dest).makePublic().catch(() => {});
+        mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+      } else if (GCS_BUCKET) {
+        const storage = new Storage();
+        const bucket = storage.bucket(GCS_BUCKET);
+        const dest = `ingest/${jobId}.mp4`;
+        await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
+        await bucket.file(dest).makePublic().catch(() => {});
+        mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
+      } else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
+        const cfResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/stream/direct_upload`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${CF_API_TOKEN}`,
+            'Content-Type': 'application/json',
           },
+          body: JSON.stringify({ requireSignedURLs: false, thumbnailTimestampPct: 0 }),
         });
-        uploader.start();
-      });
-      // mediaUrl left empty when using CF; prefer cfUid
-    } else {
-      mediaUrl = `${WORKER_PUBLIC_URL}/media/ingest/${jobId}.mp4`;
-    }
+        if (!cfResp.ok) {
+          const t = await cfResp.text().catch(() => '');
+          throw new Error(`Cloudflare direct_upload create failed (trim): ${cfResp.status} ${t}`);
+        }
+        const cfJson: any = await cfResp.json();
+        const uploadURL: string | undefined = cfJson?.result?.uploadURL;
+        cfUid = cfJson?.result?.uid;
+        if (!uploadURL || !cfUid) {
+          throw new Error('Cloudflare direct_upload response missing uploadURL or uid (trim)');
+        }
+        let Tus: TusTypes | null = null;
+        try {
+          const mod: any = await import('tus-js-client');
+          Tus = { Upload: mod.Upload, NodeHttpStack: mod.NodeHttpStack };
+        } catch (e) {
+          throw new Error('tus-js-client is required for Cloudflare uploads but is not installed.');
+        }
+        const stat = fsSync.statSync(outPath);
+        const stream = fsSync.createReadStream(outPath);
+        await new Promise<void>((resolve, reject) => {
+          const uploader = new (Tus as TusTypes).Upload(stream as any, {
+            endpoint: uploadURL,
+            uploadSize: stat.size,
+            retryDelays: [500, 1000, 2000, 5000],
+            httpStack: new (Tus as TusTypes).NodeHttpStack(),
+            metadata: { filename: `${jobId}.mp4`, filetype: 'video/mp4' },
+            onError: (error: any) => reject(error),
+            onSuccess: () => resolve(),
+            onProgress: (bytesSent: number, bytesTotal: number) => {
+              const p = Math.max(90, Math.min(99, Math.floor((bytesSent / bytesTotal) * 100)));
+              sendCallback(jobId, { status: 'uploading', progress: p, postId: req.postId });
+            },
+          });
+          uploader.start();
+        });
+      } else {
+        mediaUrl = `${WORKER_PUBLIC_URL}/media/ingest/${jobId}.mp4`;
+      }
 
-    await sendCallback(jobId, { status: 'finalizing', progress: 95, postId: req.postId });
-    await sendCallback(jobId, {
-      status: 'completed',
-      progress: 100,
-      mediaUrl,
-      cfUid,
-      cfStatus: cfUid ? 'uploaded' : undefined,
-      postId: req.postId,
+      await sendCallback(jobId, { status: 'finalizing', progress: 95, postId: req.postId });
+      await sendCallback(jobId, {
+        status: 'completed',
+        progress: 100,
+        mediaUrl,
+        cfUid,
+        cfStatus: cfUid ? 'uploaded' : undefined,
+        postId: req.postId,
+      });
+      console.log('[worker] Trim completed', { jobId });
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      await sendCallback(jobId, {
+        status: 'failed',
+        progress: 0,
+        error: `Worker trim failed: ${msg}`,
+        postId: req.postId,
+      });
+      console.error('[worker] Trim failed', { jobId, error: msg });
+    }
+  } catch (error: any) {
+    console.error('[worker] Trim operation failed', { jobId, error: error?.message });
+    await sendCallback(jobId, { 
+      status: 'failed', 
+      progress: 0, 
+      error: error?.message || 'Unknown error',
+      postId: req.postId 
     });
-    console.log('[worker] Trim completed', { jobId });
-  } catch (e: any) {
-    const msg = e?.message || String(e);
-    await sendCallback(jobId, {
-      status: 'failed',
-      progress: 0,
-      error: `Worker trim failed: ${msg}`,
-      postId: req.postId,
-    });
-    console.error('[worker] Trim failed', { jobId, error: msg });
   } finally {
     try { await fs.rm(workdir, { recursive: true, force: true }); } catch {}
     clearTimeout(watchdog);
-    // local watchdog cleared inside finally
   }
 }
 
@@ -246,7 +250,7 @@ async function runYtDlp(url: string, opts: Record<string, string | boolean>) {
     process.env.YT_DLP_PATH,
     'yt-dlp',
     process.platform === 'win32' ? 'yt-dlp.exe' : undefined,
-    process.platform === 'win32' ? 'C\\\\Tools\\\\yt-dlp\\\\yt-dlp.exe' : undefined,
+    process.platform === 'win32' ? 'C:\\Tools\\yt-dlp\\yt-dlp.exe' : undefined,
   ].filter(Boolean) as string[];
   let lastErr: any;
   for (const bin of candidates) {
@@ -515,12 +519,10 @@ export async function runIngest(req: IngestRequest) {
         });
         uploader.start();
       });
-      // For CF we prefer returning cfUid; mediaUrl left empty
+      // mediaUrl left empty when using CF; prefer cfUid
     } else {
-      // No bucket/CF: serve the local file via worker's static /media route (dev only)
       mediaUrl = `${WORKER_PUBLIC_URL}/media/ingest/${jobId}.mp4`;
     }
-    console.log('[worker] Upload/serve ready', { jobId, mediaUrl });
 
     await sendCallback(jobId, { status: 'finalizing', progress: 95 });
     await sendCallback(jobId, { 
