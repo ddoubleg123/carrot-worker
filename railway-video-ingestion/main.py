@@ -238,9 +238,9 @@ async def process_video_url(job_id: str, url: str) -> None:
         
         logger.info(f"Processing job {job_id} for URL: {url}")
         
-        # Check cache first
+        # Check cache first - TEMPORARILY DISABLED to force Firebase upload
         cache_key = f"video:{hash(url)}"
-        cached_result = redis_client.get(cache_key)
+        cached_result = None  # Force cache miss to enable Firebase upload
         
         if cached_result:
             logger.info(f"Cache hit for URL: {url}")
