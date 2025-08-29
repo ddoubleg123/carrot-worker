@@ -1,0 +1,20 @@
+# Python Dockerfile - disabled for Railway deployment
+# Use this for standalone Python service deployment if needed
+# Renamed to prevent Railway confusion with Node.js worker
+
+FROM python:3.11-slim
+
+# Cache buster to force clean rebuild
+ARG CACHEBUST=1
+RUN echo "Cache bust: $CACHEBUST"
+
+WORKDIR /app
+
+# Copy requirements and main.py from the current directory
+COPY requirements.txt .
+COPY main.py .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Fixed: Use python main.py instead of uvicorn to handle PORT correctly
+CMD python main.py
