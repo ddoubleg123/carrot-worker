@@ -1,24 +1,29 @@
-const fetch = require('node-fetch');
+// Use built-in fetch for Node.js 18+
+const fetch = globalThis.fetch || require('node-fetch');
 
 async function testRailwayWorker() {
-  const workerUrl = 'https://lavish-surprise-production.up.railway.app';
+  // Get the Railway URL from your .env.local
+  const workerUrl = 'https://satisfied-commitment-production.up.railway.app'; // Update this with your actual generated domain
   
   console.log('Testing Railway worker...');
   
   // Test health endpoint
   try {
+    console.log('Testing /health endpoint...');
     const healthResponse = await fetch(`${workerUrl}/health`);
     console.log('Health check:', healthResponse.status, await healthResponse.text());
   } catch (error) {
     console.error('Health check failed:', error.message);
   }
   
-  // Test ingest endpoint
+  // Test ingest endpoint with authentication
   try {
+    console.log('Testing /ingest endpoint...');
     const ingestResponse = await fetch(`${workerUrl}/ingest`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-worker-secret': 'dev_ingest_secret' // Make sure this matches your worker secret
       },
       body: JSON.stringify({
         url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const RAILWAY_SERVICE_URL = process.env.RAILWAY_INGESTION_URL || 'http://localhost:8000';
+const RAILWAY_SERVICE_URL = process.env.INGEST_WORKER_URL || 'http://localhost:8000';
+const INGEST_WORKER_SECRET = process.env.INGEST_WORKER_SECRET || 'dev_ingest_secret';
 
 interface IngestRequest {
   url: string;
@@ -67,6 +68,7 @@ export async function POST(request: NextRequest) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-worker-secret': INGEST_WORKER_SECRET,
       },
       body: JSON.stringify({ url }),
     });
@@ -147,14 +149,16 @@ export async function GET(request: NextRequest) {
     if (railwayJob.status === 'completed' && railwayJob.result) {
       const result = railwayJob.result;
       
-      // Find the best audio format with null safety
-      const audioFormat = result.formats?.find(f => f.acodec && f.acodec !== 'none');
+      // Find the best video format with fallback to audio
+      const videoFormat = result.formats?.find(f => 
+        f.ext === 'mp4' && f.acodec && f.acodec !== 'none'
+      ) || result.formats?.find(f => f.acodec && f.acodec !== 'none');
       
       return NextResponse.json({
         job: {
           ...job,
-          videoUrl: audioFormat?.url,
-          mediaUrl: audioFormat?.url,
+          videoUrl: videoFormat?.url,
+          mediaUrl: videoFormat?.url,
           title: result.title,
           duration: result.duration,
           thumbnail: result.thumbnail,

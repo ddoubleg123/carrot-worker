@@ -1,3 +1,15 @@
 *.py
 requirements.txt
 Procfile
+huggingface-vosk/
+local-transcription/
+local-vosk/
+python-scripts/
+railway-transcription/
+railway-video-ingestion/
+railway-vosk/
+render-vosk/
+simple-local-transcription/
+simple-vosk-service/
+test-service/
+working-vosk/
