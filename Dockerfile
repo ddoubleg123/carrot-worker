@@ -3,8 +3,8 @@ FROM node:20-bookworm-slim
 WORKDIR /app
 
 # Install system dependencies + ffmpeg
-RUN apt-get update  \
-  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg yt-dlp \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp static binary into /usr/local/bin
@@ -34,13 +34,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 ENV NODE_ENV=production
 ENV PORT=8080
 EXPOSE 8080
-<<<<<<< HEAD
 
 # Run as non-root user (binaries are world-executable)
 USER node
 
 # Start the application
 CMD ["node", "src/index.js"]
-=======
-CMD ["node", "dist/index.js"]
->>>>>>> fe7df38 (Fix node executable path in Dockerfile)
