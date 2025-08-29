@@ -139,18 +139,51 @@ export async function runTrim(req: TrimRequest) {
       let cfUid: string | undefined;
       
       if (FIREBASE_STORAGE_BUCKET) {
-        const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
-        const dest = `ingest/${jobId}.mp4`;
-        await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
-        await bucket.file(dest).makePublic().catch(() => {});
-        mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+        console.log('[ingest] Upload configuration check:', {
+          FIREBASE_STORAGE_BUCKET,
+          GCS_BUCKET,
+          CF_ACCOUNT_ID: !!CF_ACCOUNT_ID,
+          CF_API_TOKEN: !!CF_API_TOKEN,
+          jobId
+        });
+        
+        console.log('[ingest] Attempting Firebase Storage upload...', {
+          bucket: FIREBASE_STORAGE_BUCKET,
+          jobId,
+          outPath
+        });
+        
+        try {
+          const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+          const dest = `ingest/${jobId}.mp4`;
+          
+          console.log('[ingest] Starting Firebase Storage upload...', { dest });
+          await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+          console.log('[ingest] Firebase Storage upload completed, making public...');
+          
+          await bucket.file(dest).makePublic().catch((err) => {
+            console.warn('[ingest] Failed to make Firebase Storage file public:', err.message);
+          });
+          
+          mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+          console.log('[ingest] Firebase Storage URL generated:', mediaUrl);
+        } catch (error: any) {
+          console.error('[ingest] Firebase Storage upload failed:', {
+            error: error.message,
+            stack: error.stack,
+            bucket: FIREBASE_STORAGE_BUCKET
+          });
+          throw error;
+        }
       } else if (GCS_BUCKET) {
+        console.log('[ingest] Using Google Cloud Storage fallback...', { bucket: GCS_BUCKET });
         const storage = new Storage();
         const bucket = storage.bucket(GCS_BUCKET);
         const dest = `ingest/${jobId}.mp4`;
         await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
         await bucket.file(dest).makePublic().catch(() => {});
         mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
+        console.log('[ingest] GCS URL generated:', mediaUrl);
       } else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
         const cfResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/stream/direct_upload`, {
           method: 'POST',
@@ -458,20 +491,53 @@ export async function runIngest(req: IngestRequest) {
     await sendCallback(jobId, { status: 'uploading', progress: 90 });
     let mediaUrl = '';
     let cfUid: string | undefined;
+    
+    console.log('[ingest] Upload configuration check:', {
+      FIREBASE_STORAGE_BUCKET,
+      GCS_BUCKET,
+      CF_ACCOUNT_ID: !!CF_ACCOUNT_ID,
+      CF_API_TOKEN: !!CF_API_TOKEN,
+      jobId
+    });
+    
     if (FIREBASE_STORAGE_BUCKET) {
-      const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
-      const dest = `ingest/${jobId}.mp4`;
-      await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
-      await bucket.file(dest).makePublic().catch(() => {});
-      mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+      console.log('[ingest] Attempting Firebase Storage upload...', {
+        bucket: FIREBASE_STORAGE_BUCKET,
+        jobId,
+        outPath
+      });
+      
+      try {
+        const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+        const dest = `ingest/${jobId}.mp4`;
+        
+        console.log('[ingest] Starting Firebase Storage upload...', { dest });
+        await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+        console.log('[ingest] Firebase Storage upload completed, making public...');
+        
+        await bucket.file(dest).makePublic().catch((err) => {
+          console.warn('[ingest] Failed to make Firebase Storage file public:', err.message);
+        });
+        
+        mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+        console.log('[ingest] Firebase Storage URL generated:', mediaUrl);
+      } catch (error: any) {
+        console.error('[ingest] Firebase Storage upload failed:', {
+          error: error.message,
+          stack: error.stack,
+          bucket: FIREBASE_STORAGE_BUCKET
+        });
+        throw error;
+      }
     } else if (GCS_BUCKET) {
+      console.log('[ingest] Using Google Cloud Storage fallback...', { bucket: GCS_BUCKET });
       const storage = new Storage();
       const bucket = storage.bucket(GCS_BUCKET);
       const dest = `ingest/${jobId}.mp4`;
       await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
-      // Make public URL (or configure signed URLs as needed)
       await bucket.file(dest).makePublic().catch(() => {});
       mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
+      console.log('[ingest] GCS URL generated:', mediaUrl);
     } else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
       // Upload to Cloudflare Stream via direct upload + tus
       // 1) Create direct upload
