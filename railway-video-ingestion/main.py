@@ -1,3 +1,6 @@
+# Railway Video Ingestion Service - FORCE REDEPLOY v3.0 - 2025-08-29T17:51:31
+# Cache buster: NO_MOCK_DATA_FALLBACK_FINAL_VERSION
+# This service extracts real YouTube videos with yt-dlp and uploads to Firebase Storage
 import os
 import json
 import uuid
@@ -15,6 +18,11 @@ from pydantic import BaseModel, HttpUrl
 import yt_dlp
 import redis
 import logging
+
+# Firebase Admin SDK
+import firebase_admin
+from firebase_admin import credentials, storage
+from google.cloud import storage as gcs
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -129,44 +137,6 @@ def get_ytdl_configs():
     
     return [primary_config, fallback_config, minimal_config]
 
-def create_mock_youtube_result(url: str) -> Dict[str, Any]:
-    """Create realistic mock YouTube extraction result"""
-    # Extract video ID from URL if possible
-    video_id = "dQw4w9WgXcQ"  # Default to Rick Roll
-    if "watch?v=" in url:
-        video_id = url.split("watch?v=")[1].split("&")[0]
-    elif "youtu.be/" in url:
-        video_id = url.split("youtu.be/")[1].split("?")[0]
-    
-    return {
-        "video_id": video_id,
-        "title": f"Mock YouTube Video - {video_id}",
-        "description": "This is a mock YouTube video result used for testing the ingestion pipeline while YouTube bot detection issues are resolved.",
-        "duration": 180,  # 3 minutes
-        "uploader": "Mock Channel",
-        "upload_date": "20240101",
-        "view_count": 1000000,
-        "thumbnail": f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
-        "formats": [
-            {
-                "format_id": "140",
-                "url": f"https://mock-audio-url.googlevideo.com/{video_id}/audio.m4a",
-                "ext": "m4a",
-                "acodec": "mp4a.40.2",
-                "filesize": 2884321,
-            }
-        ],
-        "subtitles": {},
-        "automatic_captions": {
-            "en": [
-                {
-                    "url": f"https://mock-captions-url.googlevideo.com/{video_id}/captions.vtt",
-                    "ext": "vtt"
-                }
-            ]
-        }
-    }
-
 async def extract_with_fallback(url: str) -> Dict[str, Any]:
     """Extract video info with multiple fallback strategies"""
     configs = get_ytdl_configs()
@@ -225,7 +195,7 @@ def get_job(job_id: str) -> Optional[IngestJob]:
     return IngestJob(**job_data)
 
 async def process_video_url(job_id: str, url: str) -> None:
-    """Process video URL with enhanced anti-bot detection and mock fallback"""
+    """Process video URL with enhanced anti-bot detection"""
     job = get_job(job_id)
     if not job:
         return
@@ -240,7 +210,9 @@ async def process_video_url(job_id: str, url: str) -> None:
         
         # Check cache first - TEMPORARILY DISABLED to force Firebase upload
         cache_key = f"video:{hash(url)}"
+        logger.info(f"[CACHE BYPASS] Setting cached_result = None to force Firebase upload for {url}")
         cached_result = None  # Force cache miss to enable Firebase upload
+        logger.info(f"[CACHE BYPASS] cached_result is now: {cached_result}")
         
         if cached_result:
             logger.info(f"Cache hit for URL: {url}")
@@ -251,6 +223,8 @@ async def process_video_url(job_id: str, url: str) -> None:
             save_job(job)
             return
         
+        logger.info(f"[CACHE BYPASS] No cache hit, proceeding with processing for {url}")
+        
         job.progress = 30
         save_job(job)
         
@@ -258,15 +232,9 @@ async def process_video_url(job_id: str, url: str) -> None:
         is_youtube = "youtube.com" in url or "youtu.be" in url
         
         if is_youtube:
-            try:
-                # Try enhanced extraction with fallback strategies
-                info = await extract_with_fallback(url)
-                logger.info("Successfully extracted YouTube video info")
-            except Exception as e:
-                logger.warning(f"YouTube extraction failed: {str(e)}")
-                logger.info("Falling back to mock YouTube data")
-                # Use mock data as fallback for YouTube URLs
-                info = create_mock_youtube_result(url)
+            # Try enhanced extraction with fallback strategies
+            info = await extract_with_fallback(url)
+            logger.info("Successfully extracted YouTube video info")
         else:
             # For non-YouTube URLs, use standard extraction
             with yt_dlp.YoutubeDL(get_ytdl_configs()[0]) as ydl:
@@ -286,20 +254,46 @@ async def process_video_url(job_id: str, url: str) -> None:
             "view_count": info.get("view_count"),
             "thumbnail": info.get("thumbnail"),
             "formats": [],
+            "media_url": None,  # Frontend expects this field
             "subtitles": {},
             "automatic_captions": {}
         }
         
-        # Extract audio formats
+        # Extract video formats (MP4) - prioritize video over audio
+        video_formats = []
+        audio_formats = []
+        
         for fmt in info.get("formats", []):
-            if fmt.get("acodec") and fmt.get("acodec") != "none":
-                result["formats"].append({
+            if fmt.get("vcodec") and fmt.get("vcodec") != "none":
+                # Video format
+                video_formats.append({
+                    "format_id": fmt.get("format_id"),
+                    "url": fmt.get("url"),
+                    "ext": fmt.get("ext"),
+                    "vcodec": fmt.get("vcodec"),
+                    "acodec": fmt.get("acodec"),
+                    "width": fmt.get("width"),
+                    "height": fmt.get("height"),
+                    "filesize": fmt.get("filesize"),
+                })
+            elif fmt.get("acodec") and fmt.get("acodec") != "none":
+                # Audio format
+                audio_formats.append({
                     "format_id": fmt.get("format_id"),
                     "url": fmt.get("url"),
                     "ext": fmt.get("ext"),
                     "acodec": fmt.get("acodec"),
                     "filesize": fmt.get("filesize"),
                 })
+        
+        # Prioritize video formats, fallback to audio
+        result["formats"] = video_formats + audio_formats
+        
+        # Set media_url to the best video format URL for frontend
+        if video_formats:
+            result["media_url"] = video_formats[0]["url"]
+        elif audio_formats:
+            result["media_url"] = audio_formats[0]["url"]
         
         # Extract subtitles
         result["subtitles"] = info.get("subtitles", {})
@@ -439,4 +433,6 @@ async def download_audio(request: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    port = int(os.getenv("PORT", 8080))  # Default to 8080 to match Railway's expected port
+    logger.info(f"Starting server on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)

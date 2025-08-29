@@ -1,6 +1,9 @@
+# Force Railway redeploy - 2025-08-29T17:54:31 - NO MOCK DATA
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 yt-dlp==2023.12.30
 redis==5.0.1
 pydantic==2.5.0
 python-multipart==0.0.6
+firebase-admin==6.2.0
+google-cloud-storage==2.10.0
