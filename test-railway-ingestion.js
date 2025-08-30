@@ -1,6 +1,6 @@
 const https = require('https');
 
-const SERVICE_URL = 'https://satisfied-commitment-production-c529.up.railway.app';
+const SERVICE_URL = 'https://satisfied-commitment-copy-production.up.railway.app';
 const TEST_VIDEO_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'; // Rick Roll - short video for testing
 
 console.log('Testing Railway ingestion service...');
@@ -48,7 +48,7 @@ function testIngestion() {
     });
     
     const options = {
-      hostname: 'satisfied-commitment-production-c529.up.railway.app',
+      hostname: 'satisfied-commitment-copy-production.up.railway.app',
       port: 443,
       path: '/ingest',
       method: 'POST',
