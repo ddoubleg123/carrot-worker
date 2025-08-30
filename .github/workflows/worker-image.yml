@@ -35,7 +35,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:worker-${{ github.sha }}
