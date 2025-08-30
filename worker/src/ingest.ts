@@ -37,23 +37,43 @@ const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 
 // Initialize Firebase Admin if not already done
 if (!getApps().length) {
-  // Use individual environment variables if available
-  const firebaseConfig = process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY ? {
-    projectId: process.env.FIREBASE_PROJECT_ID,
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-    privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-  } : undefined;
+  let firebaseConfig: any = undefined;
+  
+  // Try GOOGLE_APPLICATION_CREDENTIALS_JSON first (full service account JSON)
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+    try {
+      firebaseConfig = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+      console.log('[ingest] Using GOOGLE_APPLICATION_CREDENTIALS_JSON for Firebase initialization');
+    } catch (error) {
+      console.error('[ingest] Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:', error);
+    }
+  }
+  
+  // Fallback to individual environment variables if JSON not available
+  if (!firebaseConfig && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    firebaseConfig = {
+      projectId: process.env.FIREBASE_PROJECT_ID,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    };
+    console.log('[ingest] Using individual Firebase environment variables');
+  }
   
   console.log('[ingest] Initializing Firebase Admin with config:', {
-    hasProjectId: !!firebaseConfig?.projectId,
-    hasClientEmail: !!firebaseConfig?.clientEmail,
-    hasPrivateKey: !!firebaseConfig?.privateKey,
+    hasCredentials: !!firebaseConfig,
+    projectId: firebaseConfig?.project_id || firebaseConfig?.projectId,
+    clientEmail: firebaseConfig?.client_email || firebaseConfig?.clientEmail,
     storageBucket: FIREBASE_STORAGE_BUCKET
   });
   
-  initializeApp({
-    credential: firebaseConfig ? credential.cert(firebaseConfig) : undefined
-  });
+  if (firebaseConfig) {
+    initializeApp({
+      credential: credential.cert(firebaseConfig)
+    });
+    console.log('[ingest] Firebase Admin initialized successfully');
+  } else {
+    console.warn('[ingest] No Firebase credentials found - uploads will use fallback methods');
+  }
 }
 
 function execCmd(cmd: string, args: string[], cwd?: string): Promise<void> {
