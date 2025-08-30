@@ -4,7 +4,7 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { runIngest, IngestRequest, runTrim, TrimRequest } from './ingest.js';
-import * as functions from 'firebase-functions';
+// import * as functions from 'firebase-functions'; // Not needed for Railway deployment
 
 // Error handling and monitoring
 process.on('uncaughtException', (error) => {
@@ -90,7 +90,10 @@ app.get('/healthz', (_req, res) => {
 
 // Accept root as a health alias to satisfy default probes
 app.get('/', (_req, res) => {
-  res.status(200).send('ok');
+  res.status(200).json({
+    message: "Video Ingestion Service",
+    status: "healthy"
+  });
 });
 
 // Aliases for health checks
@@ -339,25 +342,25 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number = CLOUD_RUN_TIMEO
   ]);
 }
 
-// Export as Firebase Function
-export const ingestWorker = functions
-  .runWith({
-    timeoutSeconds: 540,
-    memory: '4GB'
-  })
-  .https.onRequest(app);
+// Export as Firebase Function (commented out for Railway deployment)
+// export const ingestWorker = functions
+//   .runWith({
+//     timeoutSeconds: 540,
+//     memory: '4GB'
+//   })
+//   .https.onRequest(app);
 
-// For local development
-if (process.env.NODE_ENV !== 'production') {
-  const port = Number(process.env.PORT || 8080);
-  const host = process.env.HOST || '0.0.0.0';
-  const server = app.listen(port, host, () => {
-    console.log(`Ingest worker listening on :${port}`);
-    console.log('Env summary', {
-      HOST: host,
-      WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
-      INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
-      HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_CALLBACK_SECRET),
+// Start server for both local and production
+const port = Number(process.env.PORT || 8080);
+const host = '0.0.0.0';
+const server = app.listen(port, host, () => {
+  console.log(`[http] listening on ${port}`);
+  console.log('Env summary', {
+    HOST: host,
+    NODE_ENV: process.env.NODE_ENV,
+    WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
+    INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
+    HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_CALLBACK_SECRET),
     GCS_BUCKET: process.env.GCS_BUCKET,
     HAS_GOOGLE_APPLICATION_CREDENTIALS: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),
     YT_DLP_PATH: process.env.YT_DLP_PATH,
@@ -370,16 +373,17 @@ if (process.env.NODE_ENV !== 'production') {
   } else {
     console.log('Cookie mode: none');
   }
-  });
-  server.on('listening', () => {
-    try {
-      const addr = server.address();
-      console.log('Server bound address', addr);
-    } catch (e) {
-      console.log('Server bound address (unavailable)');
-    }
-  });
-  server.on('error', (err) => {
-    console.error('SERVER_LISTEN_ERROR', err?.stack || err);
-  });
-}
+});
+
+server.on('listening', () => {
+  try {
+    const addr = server.address();
+    console.log('Server bound address', addr);
+  } catch (e) {
+    console.log('Server bound address (unavailable)');
+  }
+});
+
+server.on('error', (err) => {
+  console.error('SERVER_LISTEN_ERROR', err?.stack || err);
+});
