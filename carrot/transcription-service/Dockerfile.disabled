@@ -1,3 +1,4 @@
+# DISABLED - Python Dockerfile that conflicts with Railway Node.js deployment
 # Use Python 3.9 slim image
 FROM python:3.9-slim
 
