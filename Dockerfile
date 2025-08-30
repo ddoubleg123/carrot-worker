@@ -6,6 +6,10 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
   && rm -rf /var/lib/apt/lists/*
 
+# Optional cache bust arg (used to trigger CI builds when needed)
+ARG CACHEBUST=2
+RUN echo "cachebust=$CACHEBUST"
+
 # Install yt-dlp static binary into /usr/local/bin
 RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
      -o /usr/local/bin/yt-dlp \
