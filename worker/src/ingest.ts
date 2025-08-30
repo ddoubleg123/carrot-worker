@@ -297,8 +297,9 @@ function spawnYtDlp(url: string, outPath: string, client: string, withCookies: b
       "-o", outPath,
     ];
 
-    if (withCookies && fs.existsSync('/tmp/youtube.cookies.txt')) {
-      args.push("--cookies", "/tmp/youtube.cookies.txt");
+    // Add proxy if available
+    if (process.env.YT_PROXY) {
+      args.push("--proxy", process.env.YT_PROXY);
     }
 
     console.log(`[yt-dlp] Trying client: ${client}`);
@@ -325,9 +326,9 @@ async function fetchYouTubeWithFallback(url: string, outPath: string): Promise<{
   // Initialize cookies if available
   const b64 = process.env.YT_COOKIES_B64 || "";
   const haveCookies = !!b64;
-  if (haveCookies && !fs.existsSync("/tmp/youtube.cookies.txt")) {
+  if (haveCookies && !fsSync.existsSync("/tmp/youtube.cookies.txt")) {
     try {
-      fs.writeFileSync("/tmp/youtube.cookies.txt", Buffer.from(b64, "base64"));
+      fsSync.writeFileSync("/tmp/youtube.cookies.txt", Buffer.from(b64, "base64"));
       console.log('[yt-dlp] YouTube cookies initialized');
     } catch (error) {
       console.error('[yt-dlp] Failed to initialize cookies:', error);
@@ -336,7 +337,7 @@ async function fetchYouTubeWithFallback(url: string, outPath: string): Promise<{
 
   // Try each client in sequence
   for (const client of CLIENTS) {
-    const success = await spawnYtDlp(url, outPath, client, haveCookies);
+    const success = await spawnYtDlp(url, `${outPath}.%(ext)s`, client, haveCookies);
     if (success) {
       return { ok: true, client };
     }
