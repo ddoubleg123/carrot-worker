@@ -2,7 +2,7 @@ import { Storage } from '@google-cloud/storage';
 import { initializeApp, getApps } from 'firebase-admin/app';
 import { credential } from 'firebase-admin';
 import { getStorage } from 'firebase-admin/storage';
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
@@ -266,37 +266,83 @@ export async function runTrim(req: TrimRequest) {
   }
 }
 
-async function runYtDlp(url: string, opts: Record<string, string | boolean>) {
-  // Build flags first, then add URL. Ensure short flags are prefixed with '-'.
-  const args: string[] = [];
-  for (const [k, v] of Object.entries(opts)) {
-    const flag = k.startsWith('-') ? k : `-${k}`;
-    if (typeof v === 'boolean') {
-      if (v) args.push(flag);
-    } else if (v !== undefined && v !== null) {
-      args.push(flag, String(v));
+const UA_ANDROID = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+const CLIENTS = [
+  "android",
+  "ios", 
+  "tv",
+  "android_embedded",
+];
+
+function spawnYtDlp(url: string, outPath: string, client: string, withCookies: boolean): Promise<boolean> {
+  return new Promise((resolve) => {
+    const args = [
+      url,
+      "--no-playlist",
+      "--force-ipv4",
+      "--user-agent", process.env.YT_UA || UA_ANDROID,
+      "--add-header", "Accept-Language: en-US,en;q=0.9",
+      "--extractor-args", `youtube:player_client=${client}`,
+      "--sleep-requests", "1", 
+      "--sleep-interval", "1", 
+      "--max-sleep-interval", "3",
+      "--retries", "15", 
+      "--fragment-retries", "15", 
+      "--concurrent-fragments", "1",
+      "--throttled-rate", "100K",
+      "--restrict-filenames",
+      "--no-check-certificate",
+      "--ignore-config",
+      "-o", outPath,
+    ];
+
+    if (withCookies && fs.existsSync('/tmp/youtube.cookies.txt')) {
+      args.push("--cookies", "/tmp/youtube.cookies.txt");
     }
-  }
-  // URL last per yt-dlp CLI convention
-  args.push(url);
-  const candidates = [
-    process.env.YT_DLP_PATH,
-    'yt-dlp',
-    process.platform === 'win32' ? 'yt-dlp.exe' : undefined,
-    process.platform === 'win32' ? 'C:\\Tools\\yt-dlp\\yt-dlp.exe' : undefined,
-  ].filter(Boolean) as string[];
-  let lastErr: any;
-  for (const bin of candidates) {
-    try {
-      if (bin && (!bin.includes('yt-dlp.exe') || fsSync.existsSync(bin))) {
-        await execCmd(bin, args);
-        return;
+
+    console.log(`[yt-dlp] Trying client: ${client}`);
+    const proc = spawn("yt-dlp", args, { stdio: "pipe" });
+    
+    let stderr = '';
+    proc.stderr?.on('data', (data) => {
+      stderr += data.toString();
+    });
+    
+    proc.on("exit", (code) => {
+      if (code === 0) {
+        console.log(`[yt-dlp] Success with client: ${client}`);
+        resolve(true);
+      } else {
+        console.log(`[yt-dlp] Failed with client ${client}: ${stderr.slice(-200)}`);
+        resolve(false);
       }
-    } catch (e) {
-      lastErr = e;
+    });
+  });
+}
+
+async function fetchYouTubeWithFallback(url: string, outPath: string): Promise<{ ok: boolean; client?: string }> {
+  // Initialize cookies if available
+  const b64 = process.env.YT_COOKIES_B64 || "";
+  const haveCookies = !!b64;
+  if (haveCookies && !fs.existsSync("/tmp/youtube.cookies.txt")) {
+    try {
+      fs.writeFileSync("/tmp/youtube.cookies.txt", Buffer.from(b64, "base64"));
+      console.log('[yt-dlp] YouTube cookies initialized');
+    } catch (error) {
+      console.error('[yt-dlp] Failed to initialize cookies:', error);
     }
   }
-  throw lastErr || new Error('yt-dlp not found in PATH or YT_DLP_PATH');
+
+  // Try each client in sequence
+  for (const client of CLIENTS) {
+    const success = await spawnYtDlp(url, outPath, client, haveCookies);
+    if (success) {
+      return { ok: true, client };
+    }
+  }
+  
+  return { ok: false };
 }
 
 async function sendCallback(jobId: string, payload: Record<string, any>) {
@@ -360,84 +406,16 @@ export async function runIngest(req: IngestRequest) {
       downloadProgress = Math.min(downloadProgress + 5, 55);
       sendCallback(jobId, { status: 'downloading', progress: downloadProgress });
     }, 2000);
-    // Build yt-dlp options; allow optional cookies to bypass app-gating/age/region
-    const ytOpts: Record<string, string | boolean> = {
-      // Prefer best video+audio; yt-dlp will remux if possible
-      f: 'mp4/bv*+ba/b',
-      // Write with detected extension; we'll discover the file afterwards
-      o: `${rawBase}.%(ext)s`,
-      q: true,
-      // Network robustness
-      '--socket-timeout': '30',
-      '--retries': '5',
-      '--fragment-retries': '5',
-      '--retry-sleep': '3',
-      '--file-access-retries': '10',
-      '--force-ipv4': true,
-      '--concurrent-fragments': '4',
-      '--abort-on-unavailable-fragment': true,
-      '--no-check-certificate': true,
-      '--ignore-config': true,
-      // Try to bypass YouTube app restrictions by mimicking a modern client
-      '--user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-      '--add-header': 'Referer:https://www.youtube.com',
-      // Prefer an alternate player client which often avoids the "not available on this app" block
-      '--extractor-args': 'youtube:player_client=android',
-      // Help with region restrictions
-      '--geo-bypass': true,
-      '--geo-bypass-country': 'US',
-    };
-    const cookiesPath = process.env.YT_DLP_COOKIES;
-    const cookiesFromBrowserProfile = process.env.YT_DLP_COOKIES_FROM_BROWSER_PROFILE; // e.g., 'chrome:Default'
-    const cookiesFromBrowser = process.env.YT_DLP_COOKIES_FROM_BROWSER; // e.g., 'chrome'
-    if (cookiesPath) {
-      ytOpts['--cookies'] = cookiesPath;
-    } else if (cookiesFromBrowserProfile) {
-      ytOpts['--cookies-from-browser'] = cookiesFromBrowserProfile;
-    } else if (cookiesFromBrowser) {
-      ytOpts['--cookies-from-browser'] = cookiesFromBrowser;
-    } else {
-      // Frictionless default: try Chrome profile automatically per platform
-      // Windows/Mac/Linux default profile name is usually 'Default'
-      const defaultProfile = 'chrome:Default';
-      ytOpts['--cookies-from-browser'] = defaultProfile;
-    }
-    // Log safe snapshot of yt-dlp config (exclude file contents)
-    const safeLog = {
-      f: ytOpts.f,
-      o: ytOpts.o ? String(ytOpts.o).replace(/\\\\/g, '/') : undefined,
-      ua: ytOpts['--user-agent'] ? 'set' : 'unset',
-      extractorArgs: ytOpts['--extractor-args'],
-      geoBypass: ytOpts['--geo-bypass'],
-      geoCountry: ytOpts['--geo-bypass-country'],
-      cookies: cookiesPath ? 'file' : (cookiesFromBrowserProfile || cookiesFromBrowser ? `browser:${cookiesFromBrowserProfile || cookiesFromBrowser}` : 'none'),
-    } as any;
-    console.log('[worker] yt-dlp config', { jobId, yt: safeLog });
+    // Use new client cycling approach instead of old yt-dlp code
     try {
-      await runYtDlp(req.url, ytOpts);
-    } catch (e: any) {
-      const errText = String(e?.stderr || e?.message || e || '');
-      const APP_GATE_MSG = 'The following content is not available on this app';
-      if (errText.includes(APP_GATE_MSG)) {
-        // Retry with a different player client that often bypasses the gate
-        const ytOptsRetry1 = { ...ytOpts, '--extractor-args': 'youtube:player_client=web' } as Record<string, any>;
-        console.error('[worker] yt-dlp retry#1 with web client due to app gate', { jobId });
-        try {
-          await runYtDlp(req.url, ytOptsRetry1);
-        } catch (e2: any) {
-          // Second retry: switch UA again and force no-redirect client
-          const ytOptsRetry2 = {
-            ...ytOptsRetry1,
-            '--user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36',
-          } as Record<string, any>;
-          console.error('[worker] yt-dlp retry#2 with alternate UA', { jobId });
-          await runYtDlp(req.url, ytOptsRetry2).catch((e3: any) => {
-            throw new Error(`yt-dlp failed after retries: ${e3?.stderr || e3?.message || String(e3)}`);
-          });
-        }
-      } else {
-        throw new Error(`yt-dlp failed: ${errText}`);
+      const result = await fetchYouTubeWithFallback(req.url, `${rawBase}.%(ext)s`);
+      if (!result.ok) {
+        throw new Error('All yt-dlp client attempts failed');
       }
+      console.log(`[worker] Video downloaded successfully using ${result.client} client`);
+    } catch (e: any) {
+      console.error('[worker] yt-dlp failed with all clients', { jobId, error: e.message });
+      throw new Error(`yt-dlp failed: ${e.message}`);
     } finally {
       clearInterval(keepalive1);
     }
