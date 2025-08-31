@@ -1,31 +1,44 @@
-# ---- build ----
-FROM node:20-alpine AS build
+FROM node:20-alpine
+
+# Install system dependencies including video processing tools
+RUN apk add --no-cache \
+    curl \
+    python3 \
+    py3-pip \
+    ffmpeg \
+    sudo
+
+# Install yt-dlp via pip
+RUN pip install --break-system-packages yt-dlp
+
+# Create app directory and user
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nodejs -u 1001
+
+# Add nodejs user to sudoers for runtime installations
+RUN echo "nodejs ALL=(ALL) NOPASSWD: /sbin/apk" >> /etc/sudoers
+
 WORKDIR /app
-RUN apk add --no-cache ffmpeg python3 py3-pip \
-    && pip3 install --break-system-packages yt-dlp
+
+# Copy package files
 COPY package*.json ./
-RUN npm ci
-COPY . .
-# Skip build step - using JavaScript directly
 
-# ---- run ----
-FROM node:20-alpine AS runner
-WORKDIR /app
-RUN apk add --no-cache ffmpeg python3 py3-pip curl \
-    && pip3 install --break-system-packages yt-dlp
+# Install dependencies
+RUN npm ci --only=production
 
-COPY --from=build /app/package*.json ./
-RUN npm ci --omit=dev
+# Copy source code
+COPY src/ ./src/
 
-COPY --from=build /app/src ./src
-
-ENV NODE_ENV=production
-ENV PORT=8080
-EXPOSE 8080
+# Change ownership to nodejs user
+RUN chown -R nodejs:nodejs /app
+USER nodejs
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD curl -fsS http://localhost:${PORT}/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8080/healthz || exit 1
 
-USER node
-CMD ["node","src/index.js"]
+# Expose port
+EXPOSE 8080
+
+# Start the application
+CMD ["node", "src/index.js"]

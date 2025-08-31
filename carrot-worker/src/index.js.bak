@@ -1,0 +1,97 @@
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+
+// Error handling and monitoring
+process.on('uncaughtException', (error) => {
+  console.error('[FATAL] Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+const app = express();
+
+// Health check endpoint with detailed status
+app.get('/healthz', (_req, res) => {
+  const health = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    memory: process.memoryUsage(),
+    version: process.version,
+    environment: process.env.NODE_ENV || 'development',
+    services: {
+      redis: process.env.REDIS_URL ? 'configured' : 'missing',
+      firebase: process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ? 'configured' : 'missing',
+      storage: process.env.FIREBASE_STORAGE_BUCKET ? 'configured' : 'missing'
+    }
+  };
+  
+  console.log('[HEALTH] Health check requested:', health);
+  res.status(200).json(health);
+});
+
+// Basic info endpoint
+app.get('/', (_req, res) => {
+  res.status(200).json({
+    service: 'carrot-ingest-worker',
+    version: '0.1.0',
+    status: 'running',
+    endpoints: ['/healthz', '/']
+  });
+});
+
+// Log Firebase and environment setup on startup
+function logStartupInfo() {
+  console.log('[STARTUP] Carrot Ingest Worker v0.1.0');
+  console.log('[STARTUP] Environment:', {
+    NODE_ENV: process.env.NODE_ENV || 'development',
+    PORT: process.env.PORT || 8080,
+    REDIS_URL: process.env.REDIS_URL ? 'SET' : 'NOT_SET',
+    INGEST_WORKER_SECRET: process.env.INGEST_WORKER_SECRET ? 'SET' : 'NOT_SET',
+    FIREBASE_STORAGE_BUCKET: process.env.FIREBASE_STORAGE_BUCKET ? 'SET' : 'NOT_SET',
+    GOOGLE_APPLICATION_CREDENTIALS_JSON: process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ? 'SET' : 'NOT_SET'
+  });
+  
+  // Warn about missing env vars but don't fail in development
+  if (!process.env.FIREBASE_STORAGE_BUCKET) {
+    console.warn('[WARN] FIREBASE_STORAGE_BUCKET environment variable is missing');
+  }
+  
+  if (!process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+    console.warn('[WARN] GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable is missing');
+  }
+  
+  console.log('[STARTUP] Environment check complete');
+}
+
+// Start server
+const port = Number(process.env.PORT || 8080);
+const host = '0.0.0.0';
+
+logStartupInfo();
+
+const server = app.listen(port, host, () => {
+  console.log(`[HTTP] Server listening on ${host}:${port}`);
+  console.log(`[HTTP] Health check available at http://${host}:${port}/healthz`);
+});
+
+server.on('listening', () => {
+  try {
+    const addr = server.address();
+    console.log('[HTTP] Server bound to:', addr);
+  } catch (e) {
+    console.log('[HTTP] Server bound (address unavailable)');
+  }
+});
+
+server.on('error', (err) => {
+  console.error('[HTTP] Server error:', err?.stack || err);
+  process.exit(1);
+});
