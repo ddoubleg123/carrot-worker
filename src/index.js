@@ -9,29 +9,42 @@ const PORT = process.env.PORT || 8080;
 async function installVideoTools() {
   console.log('[STARTUP] Installing video processing tools...');
   const pExecFile = promisify(execFile);
+
+  // Fast path: if both tools are available, skip installation
+  try {
+    await pExecFile('yt-dlp', ['--version']);
+    await pExecFile('ffmpeg', ['-version']);
+    console.log('[STARTUP] Video tools already available; skipping installation');
+    return;
+  } catch (_) {
+    // Continue to best-effort installation
+  }
   
   try {
-    // Install yt-dlp via pip with --user flag for non-root installation
+    // Try installing yt-dlp. Prefer pip when available; otherwise fall back to direct download.
     console.log('[STARTUP] Installing yt-dlp...');
-    await pExecFile('pip', ['install', '--user', '--upgrade', 'yt-dlp']);
-    console.log('[STARTUP] yt-dlp installed successfully');
-    
-    // Check if ffmpeg is available (should be in Alpine base)
+    try {
+      await pExecFile('pip', ['install', '--user', '--upgrade', 'yt-dlp']);
+      console.log('[STARTUP] yt-dlp installed successfully via pip');
+    } catch (pipError) {
+      console.log(`[STARTUP] pip not available or failed (${pipError?.message}); attempting direct download...`);
+      try {
+        await pExecFile('curl', ['-L', 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', '-o', '/usr/local/bin/yt-dlp']);
+        await pExecFile('chmod', ['a+rx', '/usr/local/bin/yt-dlp']);
+        console.log('[STARTUP] yt-dlp installed successfully via direct download');
+      } catch (dlError) {
+        console.log(`[STARTUP] Failed to install yt-dlp via direct download: ${dlError?.message}`);
+      }
+    }
+
+    // Ensure ffmpeg exists; if not, log and continue (image should already provide it)
     try {
       await pExecFile('ffmpeg', ['-version']);
       console.log('[STARTUP] ffmpeg already available');
     } catch (e) {
-      console.log('[STARTUP] Installing ffmpeg...');
-      // Try to install ffmpeg with sudo if available, otherwise skip
-      try {
-        await pExecFile('sudo', ['apk', 'add', '--no-cache', 'ffmpeg']);
-        console.log('[STARTUP] ffmpeg installed successfully');
-      } catch (sudoError) {
-        console.log('[STARTUP] Cannot install ffmpeg (no sudo access), checking if already available...');
-        // ffmpeg might already be available in the system PATH
-      }
+      console.log('[STARTUP] ffmpeg not found; runtime installation is not supported in this environment');
     }
-    
+
     console.log('[STARTUP] Video processing tools installation completed');
   } catch (error) {
     console.error('[STARTUP] Failed to install video tools:', error.message);
