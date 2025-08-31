@@ -4,6 +4,33 @@ import fs from 'fs';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { runIngest, runTrim } from './ingest.js';
+// import * as functions from 'firebase-functions'; // Not needed for Railway deployment
+// Error handling and monitoring
+process.on('uncaughtException', (error) => {
+    console.error('[FATAL] Uncaught Exception:', error);
+    process.exit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[FATAL] Unhandled Rejection at:', promise, 'reason:', reason);
+    process.exit(1);
+});
+// Health check endpoint for Cloud Run
+function createHealthCheck() {
+    return (req, res) => {
+        const healthCheck = {
+            uptime: process.uptime(),
+            timestamp: Date.now(),
+            status: 'OK',
+            memory: process.memoryUsage(),
+            environment: {
+                nodeVersion: process.version,
+                platform: process.platform,
+                arch: process.arch
+            }
+        };
+        res.status(200).json(healthCheck);
+    };
+}
 const app = express();
 // Minimal request logger to observe health probes and other requests
 app.use((req, _res, next) => {
@@ -56,7 +83,10 @@ app.get('/healthz', (_req, res) => {
 });
 // Accept root as a health alias to satisfy default probes
 app.get('/', (_req, res) => {
-    res.status(200).send('ok');
+    res.status(200).json({
+        message: "Video Ingestion Service",
+        status: "healthy"
+    });
 });
 // Aliases for health checks
 app.get('/livez', (_req, res) => {
@@ -255,19 +285,63 @@ app.get('/ingest/test', async (req, res) => {
     });
     return res.status(202).json({ accepted: true, jobId: id });
 });
-// Basic process error logging for easier troubleshooting
+// Enhanced error logging for Cloud Run
 process.on('uncaughtException', (err) => {
-    console.error('UNCAUGHT_EXCEPTION', err?.stack || err);
+    console.error('[FATAL] UNCAUGHT_EXCEPTION', {
+        error: err?.message,
+        stack: err?.stack,
+        timestamp: new Date().toISOString(),
+        memory: process.memoryUsage()
+    });
+    process.exit(1);
 });
 process.on('unhandledRejection', (reason) => {
-    console.error('UNHANDLED_REJECTION', reason);
+    console.error('[FATAL] UNHANDLED_REJECTION', {
+        reason: reason,
+        timestamp: new Date().toISOString(),
+        memory: process.memoryUsage()
+    });
+    process.exit(1);
 });
+// Health check endpoint for Cloud Run
+app.get('/health', (req, res) => {
+    const healthCheck = {
+        status: 'healthy',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        memory: process.memoryUsage(),
+        environment: {
+            nodeVersion: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            firebaseConfigured: !!process.env.FIREBASE_STORAGE_BUCKET
+        }
+    };
+    res.status(200).json(healthCheck);
+});
+// Timeout protection for long-running operations
+const CLOUD_RUN_TIMEOUT = 55 * 60 * 1000; // 55 minutes (Cloud Run max is 60)
+function withTimeout(promise, timeoutMs = CLOUD_RUN_TIMEOUT) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Operation timed out after ${timeoutMs}ms`)), timeoutMs))
+    ]);
+}
+// Export as Firebase Function (commented out for Railway deployment)
+// export const ingestWorker = functions
+//   .runWith({
+//     timeoutSeconds: 540,
+//     memory: '4GB'
+//   })
+//   .https.onRequest(app);
+// Start server for both local and production
 const port = Number(process.env.PORT || 8080);
-const host = process.env.HOST || '0.0.0.0';
+const host = '0.0.0.0';
 const server = app.listen(port, host, () => {
-    console.log(`Ingest worker listening on :${port}`);
+    console.log(`[http] listening on ${port}`);
     console.log('Env summary', {
         HOST: host,
+        NODE_ENV: process.env.NODE_ENV,
         WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
         INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
         HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_CALLBACK_SECRET),

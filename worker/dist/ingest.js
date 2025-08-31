@@ -1,7 +1,8 @@
 import { Storage } from '@google-cloud/storage';
 import { initializeApp, getApps } from 'firebase-admin/app';
+import { credential } from 'firebase-admin';
 import { getStorage } from 'firebase-admin/storage';
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
 import path from 'path';
 import fs from 'fs/promises';
 import fsSync from 'fs';
@@ -17,7 +18,41 @@ const CF_ACCOUNT_ID = process.env.CLOUDFLARE_ACCOUNT_ID || '';
 const CF_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN || '';
 // Initialize Firebase Admin if not already done
 if (!getApps().length) {
-    initializeApp();
+    let firebaseConfig = undefined;
+    // Try GOOGLE_APPLICATION_CREDENTIALS_JSON first (full service account JSON)
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON) {
+        try {
+            firebaseConfig = JSON.parse(process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON);
+            console.log('[ingest] Using GOOGLE_APPLICATION_CREDENTIALS_JSON for Firebase initialization');
+        }
+        catch (error) {
+            console.error('[ingest] Failed to parse GOOGLE_APPLICATION_CREDENTIALS_JSON:', error);
+        }
+    }
+    // Fallback to individual environment variables if JSON not available
+    if (!firebaseConfig && process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+        firebaseConfig = {
+            projectId: process.env.FIREBASE_PROJECT_ID,
+            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        };
+        console.log('[ingest] Using individual Firebase environment variables');
+    }
+    console.log('[ingest] Initializing Firebase Admin with config:', {
+        hasCredentials: !!firebaseConfig,
+        projectId: firebaseConfig?.project_id || firebaseConfig?.projectId,
+        clientEmail: firebaseConfig?.client_email || firebaseConfig?.clientEmail,
+        storageBucket: FIREBASE_STORAGE_BUCKET
+    });
+    if (firebaseConfig) {
+        initializeApp({
+            credential: credential.cert(firebaseConfig)
+        });
+        console.log('[ingest] Firebase Admin initialized successfully');
+    }
+    else {
+        console.warn('[ingest] No Firebase credentials found - uploads will use fallback methods');
+    }
 }
 function execCmd(cmd, args, cwd) {
     return new Promise((resolve, reject) => {
@@ -57,144 +92,165 @@ function execCmd(cmd, args, cwd) {
 // Trim an existing video into a new clip and make it available similarly to ingest output
 export async function runTrim(req) {
     const jobId = req.id;
-    const workdir = path.join(process.cwd(), 'tmp', `trim-${jobId}`);
+    const workdir = path.join('/tmp', `trim_${jobId}`);
     await fs.mkdir(workdir, { recursive: true });
-    const outLocalDir = path.join(process.cwd(), 'data', 'ingest');
-    await fs.mkdir(outLocalDir, { recursive: true }).catch(() => { });
-    const finalLocalPath = path.join(outLocalDir, `${jobId}.mp4`);
-    const outPath = GCS_BUCKET ? path.join(workdir, 'output.mp4') : finalLocalPath;
-    // Normalize start/end
-    const start = Math.max(0, Number(req.startSec || 0));
-    const end = Number(req.endSec || 0);
-    const hasEnd = !Number.isNaN(end) && end > start;
-    // Watchdog to avoid stuck jobs
-    const watchdog = setTimeout(async () => {
-        console.warn('[worker] Trim watchdog timeout; marking failed', { jobId });
-        await sendCallback(jobId, {
-            status: 'failed',
-            progress: 0,
-            error: 'Trim timeout. Check source availability.'
-        });
-        try {
-            await fs.rm(workdir, { recursive: true, force: true });
-        }
-        catch { }
-    }, 4 * 60 * 1000);
+    const watchdog = setTimeout(() => {
+        console.error('[worker] Trim watchdog timeout', { jobId });
+    }, 60 * 60 * 1000); // 1 hour
     try {
-        console.log('[worker] Trim start', { jobId, sourceUrl: req.sourceUrl, start, end: hasEnd ? end : undefined });
-        await sendCallback(jobId, { status: 'downloading', progress: 10, postId: req.postId });
-        // Transcode/trim directly from URL; ffmpeg can read http(s). Use veryfast baseline output.
-        let transcodeProgress = 20;
+        console.log('[worker] Starting trim', { jobId, sourceUrl: req.sourceUrl, startSec: req.startSec, endSec: req.endSec });
+        await sendCallback(jobId, { status: 'processing', progress: 10, postId: req.postId });
+        const outPath = path.join(workdir, `${jobId}.mp4`);
+        const start = req.startSec;
+        const end = req.endSec;
+        const hasEnd = typeof end === 'number' && end > 0;
+        // Keep-alive interval
         const keepalive = setInterval(() => {
-            transcodeProgress = Math.min(transcodeProgress + 4, 85);
-            sendCallback(jobId, { status: 'transcoding', progress: transcodeProgress, postId: req.postId });
-        }, 2000);
-        const ffArgs = [
-            '-y',
-            ...(start ? ['-ss', String(start)] : []),
-            '-i', req.sourceUrl,
-            ...(hasEnd ? ['-to', String(end)] : []),
-            // Prefer stream copy when possible for speed; fall back to encode in case of errors handled by ffmpeg itself
-            // Here we encode to ensure broad compatibility similar to ingest output
-            '-c:v', 'libx264',
-            '-preset', 'veryfast',
-            '-profile:v', 'baseline',
-            '-level', '3.1',
-            '-c:a', 'aac',
-            '-movflags', '+faststart',
-            outPath,
-        ];
-        await execCmd('ffmpeg', ffArgs).finally(() => clearInterval(keepalive));
-        console.log('[worker] Trim transcode complete', { jobId, outPath });
-        await sendCallback(jobId, { status: 'uploading', progress: 90, postId: req.postId });
-        let mediaUrl = '';
-        let cfUid;
-        if (FIREBASE_STORAGE_BUCKET) {
-            const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
-            const dest = `ingest/${jobId}.mp4`;
-            await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
-            await bucket.file(dest).makePublic().catch(() => { });
-            mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
-        }
-        else if (GCS_BUCKET) {
-            const storage = new Storage();
-            const bucket = storage.bucket(GCS_BUCKET);
-            const dest = `ingest/${jobId}.mp4`;
-            await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
-            await bucket.file(dest).makePublic().catch(() => { });
-            mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
-        }
-        else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
-            // For parity with ingest: upload to Cloudflare Stream if configured
-            const cfResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/stream/direct_upload`, {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${CF_API_TOKEN}`,
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ requireSignedURLs: false, thumbnailTimestampPct: 0 }),
-            });
-            if (!cfResp.ok) {
-                const t = await cfResp.text().catch(() => '');
-                throw new Error(`Cloudflare direct_upload create failed (trim): ${cfResp.status} ${t}`);
-            }
-            const cfJson = await cfResp.json();
-            const uploadURL = cfJson?.result?.uploadURL;
-            cfUid = cfJson?.result?.uid;
-            if (!uploadURL || !cfUid) {
-                throw new Error('Cloudflare direct_upload response missing uploadURL or uid (trim)');
-            }
-            let Tus = null;
-            try {
-                const mod = await import('tus-js-client');
-                Tus = { Upload: mod.Upload, NodeHttpStack: mod.NodeHttpStack };
-            }
-            catch (e) {
-                throw new Error('tus-js-client is required for Cloudflare uploads but is not installed.');
-            }
-            const stat = fsSync.statSync(outPath);
-            const stream = fsSync.createReadStream(outPath);
-            await new Promise((resolve, reject) => {
-                const uploader = new Tus.Upload(stream, {
-                    endpoint: uploadURL,
-                    uploadSize: stat.size,
-                    retryDelays: [500, 1000, 2000, 5000],
-                    httpStack: new Tus.NodeHttpStack(),
-                    metadata: { filename: `${jobId}.mp4`, filetype: 'video/mp4' },
-                    onError: (error) => reject(error),
-                    onSuccess: () => resolve(),
-                    onProgress: (bytesSent, bytesTotal) => {
-                        const p = Math.max(90, Math.min(99, Math.floor((bytesSent / bytesTotal) * 100)));
-                        sendCallback(jobId, { status: 'uploading', progress: p, postId: req.postId });
-                    },
+            console.log('[worker] Trim keep-alive', { jobId });
+        }, 30000);
+        try {
+            // Fallback to ffmpeg
+            const ffArgs = [
+                '-y',
+                ...(start ? ['-ss', String(start)] : []),
+                '-i', req.sourceUrl,
+                ...(hasEnd ? ['-to', String(end)] : []),
+                '-c:v', 'libx264',
+                '-preset', 'veryfast',
+                '-profile:v', 'baseline',
+                '-level', '3.1',
+                '-c:a', 'aac',
+                '-movflags', '+faststart',
+                outPath,
+            ];
+            await execCmd('ffmpeg', ffArgs).finally(() => clearInterval(keepalive));
+            console.log('[worker] Trim transcode complete', { jobId, outPath });
+            await sendCallback(jobId, { status: 'uploading', progress: 90, postId: req.postId });
+            let mediaUrl = '';
+            let cfUid;
+            if (FIREBASE_STORAGE_BUCKET) {
+                console.log('[ingest] Upload configuration check:', {
+                    FIREBASE_STORAGE_BUCKET,
+                    GCS_BUCKET,
+                    CF_ACCOUNT_ID: !!CF_ACCOUNT_ID,
+                    CF_API_TOKEN: !!CF_API_TOKEN,
+                    jobId
                 });
-                uploader.start();
+                console.log('[ingest] Attempting Firebase Storage upload...', {
+                    bucket: FIREBASE_STORAGE_BUCKET,
+                    jobId,
+                    outPath
+                });
+                try {
+                    const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+                    const dest = `ingest/${jobId}.mp4`;
+                    console.log('[ingest] Starting Firebase Storage upload...', { dest });
+                    await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+                    console.log('[ingest] Firebase Storage upload completed, making public...');
+                    await bucket.file(dest).makePublic().catch((err) => {
+                        console.warn('[ingest] Failed to make Firebase Storage file public:', err.message);
+                    });
+                    mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+                    console.log('[ingest] Firebase Storage URL generated:', mediaUrl);
+                }
+                catch (error) {
+                    console.error('[ingest] Firebase Storage upload failed:', {
+                        error: error.message,
+                        stack: error.stack,
+                        bucket: FIREBASE_STORAGE_BUCKET
+                    });
+                    throw error;
+                }
+            }
+            else if (GCS_BUCKET) {
+                console.log('[ingest] Using Google Cloud Storage fallback...', { bucket: GCS_BUCKET });
+                const storage = new Storage();
+                const bucket = storage.bucket(GCS_BUCKET);
+                const dest = `ingest/${jobId}.mp4`;
+                await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
+                await bucket.file(dest).makePublic().catch(() => { });
+                mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
+                console.log('[ingest] GCS URL generated:', mediaUrl);
+            }
+            else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
+                const cfResp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/stream/direct_upload`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${CF_API_TOKEN}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ requireSignedURLs: false, thumbnailTimestampPct: 0 }),
+                });
+                if (!cfResp.ok) {
+                    const t = await cfResp.text().catch(() => '');
+                    throw new Error(`Cloudflare direct_upload create failed (trim): ${cfResp.status} ${t}`);
+                }
+                const cfJson = await cfResp.json();
+                const uploadURL = cfJson?.result?.uploadURL;
+                cfUid = cfJson?.result?.uid;
+                if (!uploadURL || !cfUid) {
+                    throw new Error('Cloudflare direct_upload response missing uploadURL or uid (trim)');
+                }
+                let Tus = null;
+                try {
+                    const mod = await import('tus-js-client');
+                    Tus = { Upload: mod.Upload, NodeHttpStack: mod.NodeHttpStack };
+                }
+                catch (e) {
+                    throw new Error('tus-js-client is required for Cloudflare uploads but is not installed.');
+                }
+                const stat = fsSync.statSync(outPath);
+                const stream = fsSync.createReadStream(outPath);
+                await new Promise((resolve, reject) => {
+                    const uploader = new Tus.Upload(stream, {
+                        endpoint: uploadURL,
+                        uploadSize: stat.size,
+                        retryDelays: [500, 1000, 2000, 5000],
+                        httpStack: new Tus.NodeHttpStack(),
+                        metadata: { filename: `${jobId}.mp4`, filetype: 'video/mp4' },
+                        onError: (error) => reject(error),
+                        onSuccess: () => resolve(),
+                        onProgress: (bytesSent, bytesTotal) => {
+                            const p = Math.max(90, Math.min(99, Math.floor((bytesSent / bytesTotal) * 100)));
+                            sendCallback(jobId, { status: 'uploading', progress: p, postId: req.postId });
+                        },
+                    });
+                    uploader.start();
+                });
+            }
+            else {
+                mediaUrl = `${WORKER_PUBLIC_URL}/media/ingest/${jobId}.mp4`;
+            }
+            await sendCallback(jobId, { status: 'finalizing', progress: 95, postId: req.postId });
+            await sendCallback(jobId, {
+                status: 'completed',
+                progress: 100,
+                mediaUrl,
+                cfUid,
+                cfStatus: cfUid ? 'uploaded' : undefined,
+                postId: req.postId,
             });
-            // mediaUrl left empty when using CF; prefer cfUid
+            console.log('[worker] Trim completed', { jobId });
         }
-        else {
-            mediaUrl = `${WORKER_PUBLIC_URL}/media/ingest/${jobId}.mp4`;
+        catch (e) {
+            const msg = e?.message || String(e);
+            await sendCallback(jobId, {
+                status: 'failed',
+                progress: 0,
+                error: `Worker trim failed: ${msg}`,
+                postId: req.postId,
+            });
+            console.error('[worker] Trim failed', { jobId, error: msg });
         }
-        await sendCallback(jobId, { status: 'finalizing', progress: 95, postId: req.postId });
-        await sendCallback(jobId, {
-            status: 'completed',
-            progress: 100,
-            mediaUrl,
-            cfUid,
-            cfStatus: cfUid ? 'uploaded' : undefined,
-            postId: req.postId,
-        });
-        console.log('[worker] Trim completed', { jobId });
     }
-    catch (e) {
-        const msg = e?.message || String(e);
+    catch (error) {
+        console.error('[worker] Trim operation failed', { jobId, error: error?.message });
         await sendCallback(jobId, {
             status: 'failed',
             progress: 0,
-            error: `Worker trim failed: ${msg}`,
-            postId: req.postId,
+            error: error?.message || 'Unknown error',
+            postId: req.postId
         });
-        console.error('[worker] Trim failed', { jobId, error: msg });
     }
     finally {
         try {
@@ -202,43 +258,79 @@ export async function runTrim(req) {
         }
         catch { }
         clearTimeout(watchdog);
-        // local watchdog cleared inside finally
     }
 }
-async function runYtDlp(url, opts) {
-    // Build flags first, then add URL. Ensure short flags are prefixed with '-'.
-    const args = [];
-    for (const [k, v] of Object.entries(opts)) {
-        const flag = k.startsWith('-') ? k : `-${k}`;
-        if (typeof v === 'boolean') {
-            if (v)
-                args.push(flag);
+const UA_ANDROID = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+const CLIENTS = [
+    "android",
+    "ios",
+    "tv",
+    "android_embedded",
+];
+function spawnYtDlp(url, outPath, client, withCookies) {
+    return new Promise((resolve) => {
+        const args = [
+            url,
+            "--no-playlist",
+            "--force-ipv4",
+            "--user-agent", process.env.YT_UA || UA_ANDROID,
+            "--add-header", "Accept-Language: en-US,en;q=0.9",
+            "--extractor-args", `youtube:player_client=${client}`,
+            "--sleep-requests", "1",
+            "--sleep-interval", "1",
+            "--max-sleep-interval", "3",
+            "--retries", "15",
+            "--fragment-retries", "15",
+            "--concurrent-fragments", "1",
+            "--throttled-rate", "100K",
+            "--restrict-filenames",
+            "--no-check-certificate",
+            "--ignore-config",
+            "-o", outPath,
+        ];
+        // Add proxy if available
+        if (process.env.YT_PROXY) {
+            args.push("--proxy", process.env.YT_PROXY);
         }
-        else if (v !== undefined && v !== null) {
-            args.push(flag, String(v));
-        }
-    }
-    // URL last per yt-dlp CLI convention
-    args.push(url);
-    const candidates = [
-        process.env.YT_DLP_PATH,
-        'yt-dlp',
-        process.platform === 'win32' ? 'yt-dlp.exe' : undefined,
-        process.platform === 'win32' ? 'C\\\\Tools\\\\yt-dlp\\\\yt-dlp.exe' : undefined,
-    ].filter(Boolean);
-    let lastErr;
-    for (const bin of candidates) {
-        try {
-            if (bin && (!bin.includes('yt-dlp.exe') || fsSync.existsSync(bin))) {
-                await execCmd(bin, args);
-                return;
+        console.log(`[yt-dlp] Trying client: ${client}`);
+        const proc = spawn("yt-dlp", args, { stdio: "pipe" });
+        let stderr = '';
+        proc.stderr?.on('data', (data) => {
+            stderr += data.toString();
+        });
+        proc.on("exit", (code) => {
+            if (code === 0) {
+                console.log(`[yt-dlp] Success with client: ${client}`);
+                resolve(true);
             }
+            else {
+                console.log(`[yt-dlp] Failed with client ${client}: ${stderr.slice(-200)}`);
+                resolve(false);
+            }
+        });
+    });
+}
+async function fetchYouTubeWithFallback(url, outPath) {
+    // Initialize cookies if available
+    const b64 = process.env.YT_COOKIES_B64 || "";
+    const haveCookies = !!b64;
+    if (haveCookies && !fsSync.existsSync("/tmp/youtube.cookies.txt")) {
+        try {
+            fsSync.writeFileSync("/tmp/youtube.cookies.txt", Buffer.from(b64, "base64"));
+            console.log('[yt-dlp] YouTube cookies initialized');
         }
-        catch (e) {
-            lastErr = e;
+        catch (error) {
+            console.error('[yt-dlp] Failed to initialize cookies:', error);
         }
     }
-    throw lastErr || new Error('yt-dlp not found in PATH or YT_DLP_PATH');
+    // Try each client in sequence
+    for (const client of CLIENTS) {
+        const success = await spawnYtDlp(url, `${outPath}.%(ext)s`, client, haveCookies);
+        if (success) {
+            return { ok: true, client };
+        }
+    }
+    return { ok: false };
 }
 async function sendCallback(jobId, payload) {
     if (!CALLBACK_URL || !CALLBACK_SECRET) {
@@ -303,90 +395,17 @@ export async function runIngest(req) {
             downloadProgress = Math.min(downloadProgress + 5, 55);
             sendCallback(jobId, { status: 'downloading', progress: downloadProgress });
         }, 2000);
-        // Build yt-dlp options; allow optional cookies to bypass app-gating/age/region
-        const ytOpts = {
-            // Prefer best video+audio; yt-dlp will remux if possible
-            f: 'mp4/bv*+ba/b',
-            // Write with detected extension; we'll discover the file afterwards
-            o: `${rawBase}.%(ext)s`,
-            q: true,
-            // Network robustness
-            '--socket-timeout': '30',
-            '--retries': '5',
-            '--fragment-retries': '5',
-            '--retry-sleep': '3',
-            '--file-access-retries': '10',
-            '--force-ipv4': true,
-            '--concurrent-fragments': '4',
-            '--abort-on-unavailable-fragment': true,
-            '--no-check-certificate': true,
-            '--ignore-config': true,
-            // Try to bypass YouTube app restrictions by mimicking a modern client
-            '--user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36',
-            '--add-header': 'Referer:https://www.youtube.com',
-            // Prefer an alternate player client which often avoids the "not available on this app" block
-            '--extractor-args': 'youtube:player_client=android',
-            // Help with region restrictions
-            '--geo-bypass': true,
-            '--geo-bypass-country': 'US',
-        };
-        const cookiesPath = process.env.YT_DLP_COOKIES;
-        const cookiesFromBrowserProfile = process.env.YT_DLP_COOKIES_FROM_BROWSER_PROFILE; // e.g., 'chrome:Default'
-        const cookiesFromBrowser = process.env.YT_DLP_COOKIES_FROM_BROWSER; // e.g., 'chrome'
-        if (cookiesPath) {
-            ytOpts['--cookies'] = cookiesPath;
-        }
-        else if (cookiesFromBrowserProfile) {
-            ytOpts['--cookies-from-browser'] = cookiesFromBrowserProfile;
-        }
-        else if (cookiesFromBrowser) {
-            ytOpts['--cookies-from-browser'] = cookiesFromBrowser;
-        }
-        else {
-            // Frictionless default: try Chrome profile automatically per platform
-            // Windows/Mac/Linux default profile name is usually 'Default'
-            const defaultProfile = 'chrome:Default';
-            ytOpts['--cookies-from-browser'] = defaultProfile;
-        }
-        // Log safe snapshot of yt-dlp config (exclude file contents)
-        const safeLog = {
-            f: ytOpts.f,
-            o: ytOpts.o ? String(ytOpts.o).replace(/\\\\/g, '/') : undefined,
-            ua: ytOpts['--user-agent'] ? 'set' : 'unset',
-            extractorArgs: ytOpts['--extractor-args'],
-            geoBypass: ytOpts['--geo-bypass'],
-            geoCountry: ytOpts['--geo-bypass-country'],
-            cookies: cookiesPath ? 'file' : (cookiesFromBrowserProfile || cookiesFromBrowser ? `browser:${cookiesFromBrowserProfile || cookiesFromBrowser}` : 'none'),
-        };
-        console.log('[worker] yt-dlp config', { jobId, yt: safeLog });
+        // Use new client cycling approach instead of old yt-dlp code
         try {
-            await runYtDlp(req.url, ytOpts);
+            const result = await fetchYouTubeWithFallback(req.url, `${rawBase}.%(ext)s`);
+            if (!result.ok) {
+                throw new Error('All yt-dlp client attempts failed');
+            }
+            console.log(`[worker] Video downloaded successfully using ${result.client} client`);
         }
         catch (e) {
-            const errText = String(e?.stderr || e?.message || e || '');
-            const APP_GATE_MSG = 'The following content is not available on this app';
-            if (errText.includes(APP_GATE_MSG)) {
-                // Retry with a different player client that often bypasses the gate
-                const ytOptsRetry1 = { ...ytOpts, '--extractor-args': 'youtube:player_client=web' };
-                console.error('[worker] yt-dlp retry#1 with web client due to app gate', { jobId });
-                try {
-                    await runYtDlp(req.url, ytOptsRetry1);
-                }
-                catch (e2) {
-                    // Second retry: switch UA again and force no-redirect client
-                    const ytOptsRetry2 = {
-                        ...ytOptsRetry1,
-                        '--user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0 Safari/537.36',
-                    };
-                    console.error('[worker] yt-dlp retry#2 with alternate UA', { jobId });
-                    await runYtDlp(req.url, ytOptsRetry2).catch((e3) => {
-                        throw new Error(`yt-dlp failed after retries: ${e3?.stderr || e3?.message || String(e3)}`);
-                    });
-                }
-            }
-            else {
-                throw new Error(`yt-dlp failed: ${errText}`);
-            }
+            console.error('[worker] yt-dlp failed with all clients', { jobId, error: e.message });
+            throw new Error(`yt-dlp failed: ${e.message}`);
         }
         finally {
             clearInterval(keepalive1);
@@ -438,21 +457,49 @@ export async function runIngest(req) {
         await sendCallback(jobId, { status: 'uploading', progress: 90 });
         let mediaUrl = '';
         let cfUid;
+        console.log('[ingest] Upload configuration check:', {
+            FIREBASE_STORAGE_BUCKET,
+            GCS_BUCKET,
+            CF_ACCOUNT_ID: !!CF_ACCOUNT_ID,
+            CF_API_TOKEN: !!CF_API_TOKEN,
+            jobId
+        });
         if (FIREBASE_STORAGE_BUCKET) {
-            const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
-            const dest = `ingest/${jobId}.mp4`;
-            await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
-            await bucket.file(dest).makePublic().catch(() => { });
-            mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+            console.log('[ingest] Attempting Firebase Storage upload...', {
+                bucket: FIREBASE_STORAGE_BUCKET,
+                jobId,
+                outPath
+            });
+            try {
+                const bucket = getStorage().bucket(FIREBASE_STORAGE_BUCKET);
+                const dest = `ingest/${jobId}.mp4`;
+                console.log('[ingest] Starting Firebase Storage upload...', { dest });
+                await bucket.upload(outPath, { destination: dest, metadata: { contentType: 'video/mp4' } });
+                console.log('[ingest] Firebase Storage upload completed, making public...');
+                await bucket.file(dest).makePublic().catch((err) => {
+                    console.warn('[ingest] Failed to make Firebase Storage file public:', err.message);
+                });
+                mediaUrl = `https://storage.googleapis.com/${FIREBASE_STORAGE_BUCKET}/${dest}`;
+                console.log('[ingest] Firebase Storage URL generated:', mediaUrl);
+            }
+            catch (error) {
+                console.error('[ingest] Firebase Storage upload failed:', {
+                    error: error.message,
+                    stack: error.stack,
+                    bucket: FIREBASE_STORAGE_BUCKET
+                });
+                throw error;
+            }
         }
         else if (GCS_BUCKET) {
+            console.log('[ingest] Using Google Cloud Storage fallback...', { bucket: GCS_BUCKET });
             const storage = new Storage();
             const bucket = storage.bucket(GCS_BUCKET);
             const dest = `ingest/${jobId}.mp4`;
             await bucket.upload(outPath, { destination: dest, contentType: 'video/mp4' });
-            // Make public URL (or configure signed URLs as needed)
             await bucket.file(dest).makePublic().catch(() => { });
             mediaUrl = `https://storage.googleapis.com/${GCS_BUCKET}/${dest}`;
+            console.log('[ingest] GCS URL generated:', mediaUrl);
         }
         else if (CF_ACCOUNT_ID && CF_API_TOKEN) {
             // Upload to Cloudflare Stream via direct upload + tus
@@ -502,13 +549,11 @@ export async function runIngest(req) {
                 });
                 uploader.start();
             });
-            // For CF we prefer returning cfUid; mediaUrl left empty
+            // mediaUrl left empty when using CF; prefer cfUid
         }
         else {
-            // No bucket/CF: serve the local file via worker's static /media route (dev only)
             mediaUrl = `${WORKER_PUBLIC_URL}/media/ingest/${jobId}.mp4`;
         }
-        console.log('[worker] Upload/serve ready', { jobId, mediaUrl });
         await sendCallback(jobId, { status: 'finalizing', progress: 95 });
         await sendCallback(jobId, {
             status: 'completed',
