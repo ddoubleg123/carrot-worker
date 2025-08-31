@@ -23,5 +23,5 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ddoubleg123/carrot-worker:${{ github.sha }}
-            ddoubleg123/carrot-worker:latest
+            danielgouldman1/carrot-worker:${{ github.sha }}
+            danielgouldman1/carrot-worker:latest
