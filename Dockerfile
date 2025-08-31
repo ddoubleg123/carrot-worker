@@ -17,7 +17,11 @@ RUN ffmpeg -version && yt-dlp --version
 
 # Copy package files and install dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then \
+      npm ci --omit=dev; \
+    else \
+      npm install --omit=dev; \
+    fi
 
 # Copy source code
 COPY src/ ./src/
