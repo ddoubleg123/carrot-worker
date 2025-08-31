@@ -113,8 +113,11 @@ const fs = require('fs');
 
 function getVersion(bin) {
   try {
-    const result = require('child_process').spawnSync(bin, ['-version'], { encoding: 'utf8' });
-    return result.error ? `ERR: ${result.error.message}` : result.stdout.split('\n')[0];
+    const args = bin === 'yt-dlp' ? ['--version'] : ['-version'];
+    const result = require('child_process').spawnSync(bin, args, { encoding: 'utf8' });
+    if (result.error) return `ERR: ${result.error.message}`;
+    const out = (result.stdout || result.stderr || '').split('\n')[0].trim();
+    return out || 'unknown';
   } catch (e) {
     return `ERR: ${e.message}`;
   }
@@ -141,7 +144,7 @@ app.get('/debug', async (req, res) => {
   const result = {
     deployment: {
       timestamp: new Date().toISOString(),
-      commit: 'bf078ce-debian-solution'
+      commit: process.env.RELEASE_SHA || process.env.GITHUB_SHA || process.env.RENDER_GIT_COMMIT || 'unknown'
     },
     container: {
       user: process.getuid ? process.getuid() : 'N/A',
