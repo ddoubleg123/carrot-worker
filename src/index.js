@@ -1,6 +1,9 @@
 const express = require('express');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
+const path = require('path');
+const os = require('os');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
@@ -109,7 +112,6 @@ app.get('/readyz', (req, res) => {
 
 // Enhanced debug endpoint to inspect container environment
 const pExecFile = promisify(execFile);
-const fs = require('fs');
 
 function getVersion(bin) {
   try {
@@ -175,6 +177,215 @@ app.get('/debug', async (req, res) => {
   res.status(200).json(result);
 });
 
+// Utilities
+async function ensureDir(dir) {
+  await fs.promises.mkdir(dir, { recursive: true }).catch(() => {});
+}
+
+function isYouTube(url, type) {
+  try {
+    const u = new URL(url);
+    const host = (u.hostname || '').toLowerCase();
+    return type === 'youtube' || host.includes('youtube.com') || host.includes('youtu.be');
+  } catch {
+    return type === 'youtube';
+  }
+}
+
+async function run(cmd, args, opts = {}) {
+  const pExecFile = promisify(execFile);
+  const res = await pExecFile(cmd, args, { maxBuffer: 1024 * 1024 * 50, ...opts });
+  return res;
+}
+
+function tryRequireStorage() {
+  try {
+    // Lazy require to avoid hard crash if dependency is missing
+    // Ensure package: @google-cloud/storage is added to carrot-worker/package.json
+    // e.g., "@google-cloud/storage": "^7"
+    const { Storage } = require('@google-cloud/storage');
+    return Storage;
+  } catch (e) {
+    console.error('[INGEST] Missing dependency @google-cloud/storage. Please add it to package.json:', e.message);
+    return null;
+  }
+}
+
+async function uploadFileToFirebase(localPath, destPath) {
+  const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
+  if (!bucketName) throw new Error('FIREBASE_STORAGE_BUCKET not set');
+
+  const Storage = tryRequireStorage();
+  if (!Storage) throw new Error('Missing @google-cloud/storage');
+
+  const credsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
+  const storage = new Storage(
+    credsJson ? { credentials: JSON.parse(credsJson) } : undefined
+  );
+  const bucket = storage.bucket(bucketName);
+  await bucket.upload(localPath, { destination: destPath, resumable: false, contentType: undefined });
+  const file = bucket.file(destPath);
+  // Try to make public; if not allowed, fall back to signed URL
+  try {
+    await file.makePublic();
+    const publicUrl = `https://storage.googleapis.com/${bucketName}/${encodeURI(destPath)}`;
+    return publicUrl;
+  } catch {
+    const [signedUrl] = await file.getSignedUrl({ action: 'read', expires: Date.now() + 1000 * 60 * 60 * 24 * 30 });
+    return signedUrl;
+  }
+}
+
+async function generateThumbnail(inputVideoPath, outputThumbPath) {
+  // Capture a frame at ~2s
+  await run('ffmpeg', ['-y', '-ss', '2', '-i', inputVideoPath, '-frames:v', '1', '-q:v', '2', outputThumbPath]);
+}
+
+async function downloadYouTubeAsMp4(url, outDir) {
+  const outTemplate = path.join(outDir, 'video.%(ext)s');
+  // Prefer mp4. If not available, merge best and force mp4 container
+  const args = [
+    '-f', 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b',
+    '--merge-output-format', 'mp4',
+    '-o', outTemplate,
+    url
+  ];
+  await run('yt-dlp', args);
+  // Determine resulting file
+  const entries = await fs.promises.readdir(outDir);
+  const videoFile = entries.find(f => f.startsWith('video.') && (f.endsWith('.mp4') || f.endsWith('.mkv') || f.endsWith('.webm') || f.endsWith('.mov')));
+  if (!videoFile) throw new Error('yt-dlp did not produce a video file');
+  let fullPath = path.join(outDir, videoFile);
+  if (!fullPath.endsWith('.mp4')) {
+    // Transcode to mp4
+    const mp4Path = path.join(outDir, 'video.mp4');
+    await run('ffmpeg', ['-y', '-i', fullPath, '-c:v', 'libx264', '-c:a', 'aac', '-movflags', '+faststart', mp4Path]);
+    fullPath = mp4Path;
+  }
+  return fullPath;
+}
+
+async function downloadAudioAsMp3(url, outDir) {
+  const outTemplate = path.join(outDir, 'audio.%(ext)s');
+  const args = ['-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', outTemplate, url];
+  await run('yt-dlp', args);
+  const entries = await fs.promises.readdir(outDir);
+  const audioFile = entries.find(f => f.startsWith('audio.') && f.endsWith('.mp3'))
+    || entries.find(f => f.startsWith('audio.'));
+  if (!audioFile) throw new Error('yt-dlp did not produce an audio file');
+  let fullPath = path.join(outDir, audioFile);
+  if (!fullPath.endsWith('.mp3')) {
+    const mp3Path = path.join(outDir, 'audio.mp3');
+    await run('ffmpeg', ['-y', '-i', fullPath, '-codec:a', 'libmp3lame', '-qscale:a', '2', mp3Path]);
+    fullPath = mp3Path;
+  }
+  return fullPath;
+}
+
+async function fetchYtMetadata(url) {
+  try {
+    const { stdout } = await run('yt-dlp', ['-J', url]);
+    return JSON.parse(stdout);
+  } catch (e) {
+    console.warn('[INGEST] Failed to fetch yt-dlp metadata:', e.message);
+    return null;
+  }
+}
+
+// Placeholder ingest function
+async function runIngest(request) {
+  console.log('[INGEST] Starting job:', request.id);
+  console.log('[INGEST] URL:', request.url);
+  console.log('[INGEST] Type:', request.type);
+  const jobId = request.id;
+  const url = request.url;
+  const type = request.type;
+
+  const baseDir = path.join(os.tmpdir(), 'jobs', jobId);
+  await ensureDir(baseDir);
+
+  const isYT = isYouTube(url, type);
+  const meta = isYT ? await fetchYtMetadata(url) : null;
+
+  let videoPath = null;
+  let audioPath = null;
+  let thumbPath = null;
+
+  try {
+    if (isYT || type === 'video') {
+      // Always fetch full MP4 for YouTube
+      videoPath = await downloadYouTubeAsMp4(url, baseDir);
+      thumbPath = path.join(baseDir, 'thumb.jpg');
+      await generateThumbnail(videoPath, thumbPath);
+    } else if (type === 'audio') {
+      audioPath = await downloadAudioAsMp3(url, baseDir);
+    } else {
+      // Fallback: attempt best video to mp4
+      videoPath = await downloadYouTubeAsMp4(url, baseDir);
+      thumbPath = path.join(baseDir, 'thumb.jpg');
+      await generateThumbnail(videoPath, thumbPath);
+    }
+
+    // Uploads
+    const uploads = {};
+    if (videoPath) {
+      const dest = `ingest/${jobId}/video.mp4`;
+      uploads.videoUrl = await uploadFileToFirebase(videoPath, dest);
+    }
+    if (audioPath) {
+      const dest = `ingest/${jobId}/audio.mp3`;
+      uploads.audioUrl = await uploadFileToFirebase(audioPath, dest);
+    }
+    if (thumbPath) {
+      const dest = `ingest/${jobId}/thumb.jpg`;
+      uploads.thumbnailUrl = await uploadFileToFirebase(thumbPath, dest);
+    }
+
+    console.log('[INGEST] Uploaded assets:', uploads);
+
+    // Optional callback to Carrot app
+    if (process.env.INGEST_CALLBACK_URL) {
+      try {
+        const payload = {
+          userId: request.userId || process.env.INGEST_DEFAULT_USER_ID || null,
+          content: (meta?.title) || 'New Ingest',
+          videoUrl: uploads.videoUrl || null,
+          audioUrl: uploads.audioUrl || null,
+          thumbnailUrl: uploads.thumbnailUrl || null,
+          sourceUrl: url,
+          meta: {
+            platform: isYT ? 'youtube' : (type || 'other'),
+            durationSec: meta?.duration || meta?.duration_string || null,
+          },
+        };
+        await fetch(process.env.INGEST_CALLBACK_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-worker-secret': process.env.INGEST_WORKER_SECRET || 'dev_ingest_secret',
+          },
+          body: JSON.stringify(payload),
+        }).then(async (r) => {
+          const text = await r.text();
+          console.log('[INGEST] Callback response', r.status, text);
+        }).catch((e) => {
+          console.error('[INGEST] Callback failed:', e.message);
+        });
+      } catch (e) {
+        console.error('[INGEST] Callback error:', e.message);
+      }
+    } else {
+      console.log('[INGEST] No INGEST_CALLBACK_URL set; skipping callback');
+    }
+
+    console.log('[INGEST] Job completed:', jobId);
+  } catch (err) {
+    console.error('[INGEST] Job failed:', jobId, err?.message);
+  } finally {
+    // Best-effort cleanup can be added if needed
+  }
+}
+
 // Simple shared-secret auth and rate limiting
 const WORKER_SECRET = process.env.INGEST_WORKER_SECRET || 'dev_ingest_secret';
 const rateBuckets = new Map();
@@ -200,19 +411,6 @@ function takeToken(key) {
   state.tokens -= 1;
   rateBuckets.set(key, state);
   return true;
-}
-
-// Placeholder ingest function
-async function runIngest(request) {
-  console.log('[INGEST] Starting job:', request.id);
-  console.log('[INGEST] URL:', request.url);
-  console.log('[INGEST] Type:', request.type);
-  
-  // TODO: Implement actual video processing with yt-dlp and ffmpeg
-  // For now, just simulate processing
-  setTimeout(() => {
-    console.log('[INGEST] Job completed:', request.id);
-  }, 5000);
 }
 
 // Ingest endpoint
