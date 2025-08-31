@@ -94,10 +94,24 @@ app.get('/', (_req, res) => {
     environment: {
       NODE_ENV: process.env.NODE_ENV,
       PORT: PORT,
-      REDIS_URL: process.env.REDIS_URL ? 'SET' : 'MISSING',
+
+      // Auth between worker -> app
       INGEST_WORKER_SECRET: process.env.INGEST_WORKER_SECRET ? 'SET' : 'MISSING',
+      INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL ? 'SET' : 'MISSING',
+
+      // Firebase Storage config (preferred)
       FIREBASE_STORAGE_BUCKET: process.env.FIREBASE_STORAGE_BUCKET ? 'SET' : 'MISSING',
-      GOOGLE_APPLICATION_CREDENTIALS_JSON: process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ? 'SET' : 'MISSING'
+      FIREBASE_CLIENT_EMAIL: process.env.FIREBASE_CLIENT_EMAIL ? 'SET' : 'MISSING',
+      FIREBASE_PRIVATE_KEY: process.env.FIREBASE_PRIVATE_KEY ? 'SET' : 'MISSING',
+      FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID ? 'SET' : 'MISSING',
+
+      // Consolidated boolean for creds presence (supports Firebase_* and legacy aliases)
+      HAS_FIREBASE_CREDS: Boolean(
+        (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) ||
+        (process.env.GCS_CLIENT_EMAIL && process.env.GCS_PRIVATE_KEY) ||
+        process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||     // still supported if present
+        process.env.GOOGLE_APPLICATION_CREDENTIALS             // still supported if present
+      ),
     }
   });
 });
@@ -155,18 +169,23 @@ app.get('/debug', async (req, res) => {
       PATH: process.env.PATH,
       cwd: process.cwd()
     },
-    env: {
-      INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
-      WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
-      HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_CALLBACK_SECRET),
-      GCS_BUCKET: process.env.GCS_BUCKET,
-      HAS_GOOGLE_APPLICATION_CREDENTIALS: Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS),
-      PORT: process.env.PORT || 8080,
-      YT_DLP_PATH: process.env.YT_DLP_PATH,
-      YT_DLP_COOKIES: process.env.YT_DLP_COOKIES,
-      YT_DLP_COOKIES_FROM_BROWSER: process.env.YT_DLP_COOKIES_FROM_BROWSER,
-      INGEST_TRIM_SECONDS: process.env.INGEST_TRIM_SECONDS,
-    },
+   env: {
+  INGEST_CALLBACK_URL: process.env.INGEST_CALLBACK_URL,
+  WORKER_PUBLIC_URL: process.env.WORKER_PUBLIC_URL,
+  HAS_CALLBACK_SECRET: Boolean(process.env.INGEST_WORKER_SECRET),
+  FIREBASE_STORAGE_BUCKET: process.env.FIREBASE_STORAGE_BUCKET,
+  HAS_GOOGLE_APPLICATION_CREDENTIALS: Boolean(
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON ||
+    process.env.GOOGLE_APPLICATION_CREDENTIALS || // file path style
+    (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) ||
+    (process.env.GCS_CLIENT_EMAIL && process.env.GCS_PRIVATE_KEY) // legacy alias supported
+  ),
+  PORT: process.env.PORT || 8080,
+  YT_DLP_PATH: process.env.YT_DLP_PATH,
+  YT_DLP_COOKIES: process.env.YT_DLP_COOKIES,
+  YT_DLP_COOKIES_FROM_BROWSER: process.env.YT_DLP_COOKIES_FROM_BROWSER,
+  INGEST_TRIM_SECONDS: process.env.INGEST_TRIM_SECONDS,
+},
     binaries: checkPaths,
     tools: {
       'yt-dlp': getVersion('yt-dlp'),
