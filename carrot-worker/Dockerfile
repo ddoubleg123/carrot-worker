@@ -8,12 +8,16 @@ RUN apk add --no-cache \
     ffmpeg \
     sudo
 
-# Install yt-dlp via pip
-RUN pip install --break-system-packages yt-dlp
-
-# Create app directory and user
+# Create app directory and user first
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001
+
+# Install yt-dlp via pip as nodejs user
+USER nodejs
+RUN pip install --user --break-system-packages yt-dlp
+
+# Switch back to root for remaining setup
+USER root
 
 # Add nodejs user to sudoers for runtime installations
 RUN echo "nodejs ALL=(ALL) NOPASSWD: /sbin/apk" >> /etc/sudoers
