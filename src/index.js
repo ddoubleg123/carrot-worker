@@ -217,6 +217,55 @@ async function run(cmd, args, opts = {}) {
   return res;
 }
 
+// Prepare yt-dlp cookies arguments based on environment variables
+// Supports:
+// - YT_DLP_COOKIES_FROM_BROWSER: e.g., 'chrome', 'edge' (works only when browser data is accessible)
+// - YT_DLP_COOKIES: either
+//     a) path to a Netscape cookies.txt on disk,
+//     b) full cookies.txt content (inline), or
+//     c) http(s) URL to a cookies.txt file (downloaded at runtime)
+let CACHED_COOKIES_PATH = null;
+async function getCookiesArgs() {
+  try {
+    const fromBrowser = (process.env.YT_DLP_COOKIES_FROM_BROWSER || '').trim();
+    if (fromBrowser) {
+      return ['--cookies-from-browser', fromBrowser];
+    }
+
+    const raw = process.env.YT_DLP_COOKIES;
+    if (!raw) return [];
+
+    // If it's clearly a path and exists, use it directly
+    if ((raw.includes('/') || raw.includes('\\') || raw.endsWith('.txt')) && fs.existsSync(raw)) {
+      return ['--cookies', raw];
+    }
+
+    // If it's a URL, download it to a temp file
+    if (/^https?:\/\//i.test(raw)) {
+      if (!CACHED_COOKIES_PATH) {
+        const tmpPath = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+        const resp = await fetch(raw);
+        if (!resp.ok) throw new Error(`Failed to download cookies (${resp.status})`);
+        const text = await resp.text();
+        await fs.promises.writeFile(tmpPath, text, 'utf8');
+        CACHED_COOKIES_PATH = tmpPath;
+      }
+      return ['--cookies', CACHED_COOKIES_PATH];
+    }
+
+    // Otherwise treat as inline cookies content
+    if (!CACHED_COOKIES_PATH) {
+      const tmpPath = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+      await fs.promises.writeFile(tmpPath, raw, 'utf8');
+      CACHED_COOKIES_PATH = tmpPath;
+    }
+    return ['--cookies', CACHED_COOKIES_PATH];
+  } catch (e) {
+    console.warn('[INGEST] Failed to prepare cookies for yt-dlp:', e.message);
+    return [];
+  }
+}
+
 function tryRequireStorage() {
   try {
     // Lazy require to avoid hard crash if dependency is missing
@@ -269,7 +318,9 @@ async function downloadYouTubeAsMp4(url, outDir) {
     '-o', outTemplate,
     url
   ];
-  await run('yt-dlp', args);
+  const cookieArgs = await getCookiesArgs();
+  const finalArgs = cookieArgs.length ? [...args.slice(0, -1), ...cookieArgs, url] : args;
+  await run('yt-dlp', finalArgs);
   // Determine resulting file
   const entries = await fs.promises.readdir(outDir);
   const videoFile = entries.find(f => f.startsWith('video.') && (f.endsWith('.mp4') || f.endsWith('.mkv') || f.endsWith('.webm') || f.endsWith('.mov')));
@@ -287,7 +338,9 @@ async function downloadYouTubeAsMp4(url, outDir) {
 async function downloadAudioAsMp3(url, outDir) {
   const outTemplate = path.join(outDir, 'audio.%(ext)s');
   const args = ['-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', outTemplate, url];
-  await run('yt-dlp', args);
+  const cookieArgs = await getCookiesArgs();
+  const finalArgs = cookieArgs.length ? [...args.slice(0, -1), ...cookieArgs, url] : args;
+  await run('yt-dlp', finalArgs);
   const entries = await fs.promises.readdir(outDir);
   const audioFile = entries.find(f => f.startsWith('audio.') && f.endsWith('.mp3'))
     || entries.find(f => f.startsWith('audio.'));
@@ -303,7 +356,10 @@ async function downloadAudioAsMp3(url, outDir) {
 
 async function fetchYtMetadata(url) {
   try {
-    const { stdout } = await run('yt-dlp', ['-J', url]);
+    const cookieArgs = await getCookiesArgs();
+    const args = ['-J'];
+    const finalArgs = cookieArgs.length ? [...args, ...cookieArgs, url] : [...args, url];
+    const { stdout } = await run('yt-dlp', finalArgs);
     return JSON.parse(stdout);
   } catch (e) {
     console.warn('[INGEST] Failed to fetch yt-dlp metadata:', e.message);
