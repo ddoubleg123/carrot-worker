@@ -1,11 +1,11 @@
-FROM node:20-bookworm-slim
+﻿FROM node:20-bookworm-slim
 
 WORKDIR /app
 
 # Install system dependencies + ffmpeg
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
- && rm -rf /var/lib/apt/lists/*
+RUN apt-get update  \
+  && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg yt-dlp \
+  && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp static binary into /usr/local/bin
 RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
@@ -36,3 +36,4 @@ USER node
 
 # Start the application
 CMD ["node", "src/index.js"]
+
