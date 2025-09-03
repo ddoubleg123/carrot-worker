@@ -487,18 +487,14 @@ async function runIngest(request) {
   console.log('[INGEST] URL:', request.url);
   console.log('[INGEST] Type:', request.type);
   const jobId = request.id;
-  const url = request.url;
-  const type = request.type;
-
-  // Ensure URL is not double-encoded (handle cases like ...watch%3Fv=...)
   let url = request.url;
   try {
     if (/%[0-9A-Fa-f]{2}/.test(url)) {
-      const decoded = decodeURIComponent(url);
-      // Only accept decoded if it forms a valid URL
-      try { new URL(decoded); url = decoded; } catch {}
+      const dec = decodeURIComponent(url);
+      try { new URL(dec); url = dec; } catch {}
     }
   } catch {}
+  const type = request.type;
 
   const baseDir = path.join(os.tmpdir(), 'jobs', jobId);
   await ensureDir(baseDir);
@@ -648,7 +644,6 @@ app.post('/ingest', express.text({ type: '*/*', limit: '1mb' }), async (req, res
 
 // Test endpoint
 app.get('/ingest/test', async (req, res) => {
-  // Decode percent-encoded URL if needed
   let url = req.query.url || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
   try { url = decodeURIComponent(url); } catch {}
   const id = req.query.id || `job-${Date.now()}`;
