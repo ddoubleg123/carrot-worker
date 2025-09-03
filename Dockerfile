@@ -2,18 +2,10 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Install system dependencies + ffmpeg
+# Minimal system dependencies (curl for runtime downloads, certs for HTTPS)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
-
-# Install yt-dlp static binary into /usr/local/bin
-RUN curl -L "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp" \
-     -o /usr/local/bin/yt-dlp \
- && chmod a+rx /usr/local/bin/yt-dlp
-
-# Fail fast if tools aren't present
-RUN ffmpeg -version && yt-dlp --version
 
 # Copy package files and install dependencies
 COPY package*.json ./
@@ -29,9 +21,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Environment and port
 ENV NODE_ENV=production
 ENV PORT=8080
+# Ensure pip --user installs are on PATH for the node user
+ENV PATH="/home/node/.local/bin:${PATH}"
 EXPOSE 8080
 
-# Run as non-root user (binaries are world-executable)
+# Run as non-root user
 USER node
 
 # Start the application
