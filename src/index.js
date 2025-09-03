@@ -245,90 +245,89 @@ async function run(cmd, args, opts = {}) {
 // Manage cookies for yt-dlp from an env var (YT_DLP_COOKIES)
 let COOKIES_FILE_PATH = null;
 async function getCookiesFilePath() {
+  if (COOKIES_FILE_PATH !== null) return COOKIES_FILE_PATH;
   try {
-    if (COOKIES_FILE_PATH && fs.existsSync(COOKIES_FILE_PATH)) return COOKIES_FILE_PATH;
+    // 0) Prefer environment-provided cookies to avoid read-only mount issues
+    const b64 = (process.env.YT_DLP_COOKIES_B64 || '').trim();
+    if (b64) {
+      const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+      try {
+        const buf = Buffer.from(b64, 'base64');
+        fs.writeFileSync(tmp, buf, { mode: 0o600 });
+        COOKIES_FILE_PATH = tmp;
+        console.log('[INGEST] Using cookies from YT_DLP_COOKIES_B64 env:', tmp);
+        return tmp;
+      } catch (e) {
+        console.warn('[INGEST] Failed to write YT_DLP_COOKIES_B64 to temp file:', e?.message);
+      }
+    }
+    const plain = (process.env.YT_DLP_COOKIES || '').trim();
+    if (plain) {
+      const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+      try {
+        fs.writeFileSync(tmp, plain, { mode: 0o600 });
+        COOKIES_FILE_PATH = tmp;
+        console.log('[INGEST] Using cookies from YT_DLP_COOKIES env:', tmp);
+        return tmp;
+      } catch (e) {
+        console.warn('[INGEST] Failed to write YT_DLP_COOKIES to temp file:', e?.message);
+      }
+    }
 
     // 1) Explicit file path
     const filePath = (process.env.YT_DLP_COOKIES_FILE || '').trim();
     if (filePath && fs.existsSync(filePath)) {
-      // If secret lives under /etc/secrets (read-only), copy to a writable temp file
-      if (filePath.startsWith('/etc/secrets/')) {
+      // If under /etc/secrets or any path, try to read then write a temp copy (read-only mounts may not be readable)
+      try {
+        const data = fs.readFileSync(filePath);
         const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-        fs.copyFileSync(filePath, tmpCopy);
+        fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
         COOKIES_FILE_PATH = tmpCopy;
-        console.log('[INGEST] Using temp copy of cookies from secret:', tmpCopy);
+        console.log('[INGEST] Using temp copy of cookies from file path:', tmpCopy);
         return tmpCopy;
+      } catch (e) {
+        console.warn('[INGEST] Failed to read cookies file path, will try other sources:', filePath, e?.message);
       }
-      COOKIES_FILE_PATH = filePath;
-      console.log('[INGEST] Using cookies file path:', filePath);
-      return filePath;
     }
 
-    // 1a) Default Render Secret File path fallback
-    // If the env var wasn't set or path doesn't exist, try the common secret name
+    // 2) Common secret mount locations
     try {
       const defaultSecret = '/etc/secrets/yt_cookies.txt';
       if (fs.existsSync(defaultSecret)) {
-        const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-        fs.copyFileSync(defaultSecret, tmpCopy);
-        COOKIES_FILE_PATH = tmpCopy;
-        console.log('[INGEST] Using temp copy of default secret cookies file:', tmpCopy);
-        return tmpCopy;
+        try {
+          const data = fs.readFileSync(defaultSecret);
+          const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+          fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
+          COOKIES_FILE_PATH = tmpCopy;
+          console.log('[INGEST] Using temp copy of default secret cookies file:', tmpCopy);
+          return tmpCopy;
+        } catch (e) {
+          console.warn('[INGEST] Cannot read default secret cookies file, need env fallback:', e?.message);
+        }
       }
       // Some Render setups mount the secret using the key name directly
       const altSecret = '/etc/secrets/YT_DLP_COOKIES_FILE';
       if (fs.existsSync(altSecret)) {
-        const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-        fs.copyFileSync(altSecret, tmpCopy);
-        COOKIES_FILE_PATH = tmpCopy;
-        console.log('[INGEST] Using temp copy of alt secret cookies file:', tmpCopy);
-        return tmpCopy;
+        try {
+          const data = fs.readFileSync(altSecret);
+          const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+          fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
+          COOKIES_FILE_PATH = tmpCopy;
+          console.log('[INGEST] Using temp copy of alt secret cookies file:', tmpCopy);
+          return tmpCopy;
+        } catch (e) {
+          console.warn('[INGEST] Cannot read alt secret cookies file, need env fallback:', e?.message);
+        }
       }
     } catch (_) {}
 
-    // 2) Download from URL at runtime
-    const fromUrl = (process.env.YT_DLP_COOKIES_URL || '').trim();
-    if (fromUrl) {
-      const p = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-      try {
-        const r = await fetch(fromUrl);
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const text = await r.text();
-        fs.writeFileSync(p, text, 'utf8');
-        COOKIES_FILE_PATH = p;
-        console.log('[INGEST] Downloaded cookies from URL to:', p);
-        return p;
-      } catch (e) {
-        console.warn('[INGEST] Failed to download cookies URL:', e.message);
-        return null;
-      }
-    }
-
-    // 3) Base64-encoded content
-    const b64 = process.env.YT_DLP_COOKIES_B64;
-    if (b64) {
-      const p = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-      const text = Buffer.from(b64, 'base64').toString('utf8');
-      fs.writeFileSync(p, text, 'utf8');
-      COOKIES_FILE_PATH = p;
-      console.log('[INGEST] Decoded base64 cookies to:', p);
-      return p;
-    }
-
-    // 4) Inline content (legacy)
-    const cookies = process.env.YT_DLP_COOKIES;
-    if (cookies) {
-      const p = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-      fs.writeFileSync(p, cookies, 'utf8');
-      COOKIES_FILE_PATH = p;
-      console.log('[INGEST] Wrote cookies file for yt-dlp:', p);
-      return p;
-    }
-
-    return null;
-  } catch (e) {
-    console.warn('[INGEST] Failed to prepare cookies file:', e.message);
-    return null;
+    // If we reach here, we have no readable cookies
+    COOKIES_FILE_PATH = '';
+    return '';
+  } catch (err) {
+    console.warn('[INGEST] Failed to resolve cookies file path:', err?.message);
+    COOKIES_FILE_PATH = '';
+    return '';
   }
 }
 
