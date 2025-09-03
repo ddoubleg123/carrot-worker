@@ -244,91 +244,107 @@ async function run(cmd, args, opts = {}) {
 
 // Manage cookies for yt-dlp from an env var (YT_DLP_COOKIES)
 let COOKIES_FILE_PATH = null;
-async function getCookiesFilePath() {
-  if (COOKIES_FILE_PATH !== null) return COOKIES_FILE_PATH;
-  try {
-    // 0) Prefer environment-provided cookies to avoid read-only mount issues
-    const b64 = (process.env.YT_DLP_COOKIES_B64 || '').trim();
-    if (b64) {
-      const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-      try {
-        const buf = Buffer.from(b64, 'base64');
-        fs.writeFileSync(tmp, buf, { mode: 0o600 });
-        COOKIES_FILE_PATH = tmp;
-        console.log('[INGEST] Using cookies from YT_DLP_COOKIES_B64 env:', tmp);
-        return tmp;
-      } catch (e) {
-        console.warn('[INGEST] Failed to write YT_DLP_COOKIES_B64 to temp file:', e?.message);
-      }
-    }
-    const plain = (process.env.YT_DLP_COOKIES || '').trim();
-    if (plain) {
-      const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-      try {
-        fs.writeFileSync(tmp, plain, { mode: 0o600 });
-        COOKIES_FILE_PATH = tmp;
-        console.log('[INGEST] Using cookies from YT_DLP_COOKIES env:', tmp);
-        return tmp;
-      } catch (e) {
-        console.warn('[INGEST] Failed to write YT_DLP_COOKIES to temp file:', e?.message);
-      }
-    }
+// Per-job override path (temporary file) if the request supplies cookies
+let JOB_COOKIES_OVERRIDE = null;
+// In-memory per-user cookies cache: { [userId]: { path, expiresAt } }
+const COOKIES_CACHE = Object.create(null);
+const COOKIES_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+function putCookiesForUser(userId, contentBuffer) {
+  const tmp = path.join(os.tmpdir(), `yt_cookies_${userId}_${Date.now()}.txt`);
+  fs.writeFileSync(tmp, contentBuffer, { mode: 0o600 });
+  COOKIES_CACHE[userId] = { path: tmp, expiresAt: Date.now() + COOKIES_TTL_MS };
+  console.log('[INGEST] Cached cookies for user:', userId, 'ttlMs=', COOKIES_TTL_MS);
+  return tmp;
+}
+function getCachedCookiesForUser(userId) {
+  const entry = COOKIES_CACHE[userId];
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    try { if (fs.existsSync(entry.path)) fs.unlinkSync(entry.path); } catch {}
+    delete COOKIES_CACHE[userId];
+    return null;
+  }
+  return entry.path;
+}
 
-    // 1) Explicit file path
-    const filePath = (process.env.YT_DLP_COOKIES_FILE || '').trim();
-    if (filePath && fs.existsSync(filePath)) {
-      // If under /etc/secrets or any path, try to read then write a temp copy (read-only mounts may not be readable)
+async function getCookiesFilePath() {
+  // Prefer environment-provided cookies to avoid read-only mount issues
+  const b64 = (process.env.YT_DLP_COOKIES_B64 || '').trim();
+  if (b64) {
+    const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+    try {
+      const buf = Buffer.from(b64, 'base64');
+      fs.writeFileSync(tmp, buf, { mode: 0o600 });
+      COOKIES_FILE_PATH = tmp;
+      console.log('[INGEST] Using cookies from YT_DLP_COOKIES_B64 env:', tmp);
+      return tmp;
+    } catch (e) {
+      console.warn('[INGEST] Failed to write YT_DLP_COOKIES_B64 to temp file:', e?.message);
+    }
+  }
+  const plain = (process.env.YT_DLP_COOKIES || '').trim();
+  if (plain) {
+    const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+    try {
+      fs.writeFileSync(tmp, plain, { mode: 0o600 });
+      COOKIES_FILE_PATH = tmp;
+      console.log('[INGEST] Using cookies from YT_DLP_COOKIES env:', tmp);
+      return tmp;
+    } catch (e) {
+      console.warn('[INGEST] Failed to write YT_DLP_COOKIES to temp file:', e?.message);
+    }
+  }
+
+  // 1) Explicit file path
+  const filePath = (process.env.YT_DLP_COOKIES_FILE || '').trim();
+  if (filePath && fs.existsSync(filePath)) {
+    // If under /etc/secrets or any path, try to read then write a temp copy (read-only mounts may not be readable)
+    try {
+      const data = fs.readFileSync(filePath);
+      const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+      fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
+      COOKIES_FILE_PATH = tmpCopy;
+      console.log('[INGEST] Using temp copy of cookies from file path:', tmpCopy);
+      return tmpCopy;
+    } catch (e) {
+      console.warn('[INGEST] Failed to read cookies file path, will try other sources:', filePath, e?.message);
+    }
+  }
+
+  // 2) Common secret mount locations
+  try {
+    const defaultSecret = '/etc/secrets/yt_cookies.txt';
+    if (fs.existsSync(defaultSecret)) {
       try {
-        const data = fs.readFileSync(filePath);
+        const data = fs.readFileSync(defaultSecret);
         const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
         fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
         COOKIES_FILE_PATH = tmpCopy;
-        console.log('[INGEST] Using temp copy of cookies from file path:', tmpCopy);
+        console.log('[INGEST] Using temp copy of default secret cookies file:', tmpCopy);
         return tmpCopy;
       } catch (e) {
-        console.warn('[INGEST] Failed to read cookies file path, will try other sources:', filePath, e?.message);
+        console.warn('[INGEST] Cannot read default secret cookies file, need env fallback:', e?.message);
       }
     }
-
-    // 2) Common secret mount locations
-    try {
-      const defaultSecret = '/etc/secrets/yt_cookies.txt';
-      if (fs.existsSync(defaultSecret)) {
-        try {
-          const data = fs.readFileSync(defaultSecret);
-          const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-          fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
-          COOKIES_FILE_PATH = tmpCopy;
-          console.log('[INGEST] Using temp copy of default secret cookies file:', tmpCopy);
-          return tmpCopy;
-        } catch (e) {
-          console.warn('[INGEST] Cannot read default secret cookies file, need env fallback:', e?.message);
-        }
+    // Some Render setups mount the secret using the key name directly
+    const altSecret = '/etc/secrets/YT_DLP_COOKIES_FILE';
+    if (fs.existsSync(altSecret)) {
+      try {
+        const data = fs.readFileSync(altSecret);
+        const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+        fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
+        COOKIES_FILE_PATH = tmpCopy;
+        console.log('[INGEST] Using temp copy of alt secret cookies file:', tmpCopy);
+        return tmpCopy;
+      } catch (e) {
+        console.warn('[INGEST] Cannot read alt secret cookies file, need env fallback:', e?.message);
       }
-      // Some Render setups mount the secret using the key name directly
-      const altSecret = '/etc/secrets/YT_DLP_COOKIES_FILE';
-      if (fs.existsSync(altSecret)) {
-        try {
-          const data = fs.readFileSync(altSecret);
-          const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
-          fs.writeFileSync(tmpCopy, data, { mode: 0o600 });
-          COOKIES_FILE_PATH = tmpCopy;
-          console.log('[INGEST] Using temp copy of alt secret cookies file:', tmpCopy);
-          return tmpCopy;
-        } catch (e) {
-          console.warn('[INGEST] Cannot read alt secret cookies file, need env fallback:', e?.message);
-        }
-      }
-    } catch (_) {}
+    }
+  } catch (_) {}
 
-    // If we reach here, we have no readable cookies
-    COOKIES_FILE_PATH = '';
-    return '';
-  } catch (err) {
-    console.warn('[INGEST] Failed to resolve cookies file path:', err?.message);
-    COOKIES_FILE_PATH = '';
-    return '';
-  }
+  // If we reach here, we have no readable cookies
+  COOKIES_FILE_PATH = '';
+  return '';
 }
 
 async function withCookiesArgs(args = []) {
@@ -498,6 +514,25 @@ async function runIngest(request) {
   const baseDir = path.join(os.tmpdir(), 'jobs', jobId);
   await ensureDir(baseDir);
 
+  // Prepare per-request cookies if provided
+  let jobCookieTmp = null;
+  try {
+    if (request.cookies_b64 && typeof request.cookies_b64 === 'string' && request.cookies_b64.trim().length > 0) {
+      jobCookieTmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+      const buf = Buffer.from(request.cookies_b64.trim(), 'base64');
+      fs.writeFileSync(jobCookieTmp, buf, { mode: 0o600 });
+      JOB_COOKIES_OVERRIDE = jobCookieTmp;
+      console.log('[INGEST] Using per-request cookies (b64) at:', jobCookieTmp);
+    } else if (request.cookies && typeof request.cookies === 'string' && request.cookies.trim().length > 0) {
+      jobCookieTmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+      fs.writeFileSync(jobCookieTmp, request.cookies.trim(), { mode: 0o600 });
+      JOB_COOKIES_OVERRIDE = jobCookieTmp;
+      console.log('[INGEST] Using per-request cookies (plain) at:', jobCookieTmp);
+    }
+  } catch (e) {
+    console.warn('[INGEST] Failed to prepare per-request cookies:', e?.message);
+  }
+
   const isYT = isYouTube(url, type);
   const meta = isYT ? await fetchYtMetadata(url) : null;
 
@@ -562,7 +597,11 @@ async function runIngest(request) {
     // Error callback so UI can show failure
     await sendCallback(jobId, { status: 'error', error: err?.message || 'ingest failed', progress: 0 });
   } finally {
-    // Best-effort cleanup can be added if needed
+    // Clean up per-request cookies temp file
+    try {
+      if (jobCookieTmp && fs.existsSync(jobCookieTmp)) fs.unlinkSync(jobCookieTmp);
+    } catch {}
+    JOB_COOKIES_OVERRIDE = null;
   }
 }
 
@@ -595,50 +634,73 @@ function takeToken(key) {
   return true;
 }
 
-// Ingest endpoint
-app.post('/ingest', express.text({ type: '*/*', limit: '1mb' }), async (req, res) => {
-  if (!WORKER_SECRET) {
-    return res.status(503).json({ error: 'INGEST_WORKER_SECRET not configured' });
-  }
-  
+// Update cookies cache for a user
+app.post('/cookies/update', express.json({ limit: '5mb' }), async (req, res) => {
+  if (!WORKER_SECRET) return res.status(503).json({ error: 'INGEST_WORKER_SECRET not configured' });
   const provided = (req.header('x-worker-secret') || '').trim();
-  if (provided !== WORKER_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
+  if (provided !== WORKER_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  const key = `${provided}:${req.ip || req.socket.remoteAddress || 'unknown'}:cookiesUpdate`;
+  if (!takeToken(key)) return res.status(429).json({ error: 'Rate limit exceeded' });
+
+  const { userId, cookies_b64, cookies } = req.body || {};
+  if (!userId || typeof userId !== 'string') return res.status(400).json({ error: 'Missing userId' });
+  let buf = null;
+  if (typeof cookies_b64 === 'string' && cookies_b64.trim().length) {
+    try { buf = Buffer.from(cookies_b64.trim(), 'base64'); } catch {}
+  } else if (typeof cookies === 'string' && cookies.trim().length) {
+    buf = Buffer.from(cookies, 'utf8');
   }
-  
-  const key = `${provided}:${req.ip || req.socket.remoteAddress || 'unknown'}`;
-  if (!takeToken(key)) {
-    return res.status(429).json({ error: 'Rate limit exceeded' });
-  }
-  
-  let body = req.body;
-  if (typeof body === 'string') {
-    let text = body;
-    if (text.startsWith('%JSON%')) {
-      text = text.replace(/^%JSON%\r?\n?/, '');
+  if (!buf) return res.status(400).json({ error: 'Missing cookies_b64 or cookies' });
+
+  const pathTmp = putCookiesForUser(userId, buf);
+  return res.json({ ok: true, path: pathTmp, ttlSeconds: Math.floor(COOKIES_TTL_MS / 1000) });
+});
+
+// JSON parser for other routes (allow large cookies payloads)
+app.use(express.json({ limit: '5mb' }));
+
+// Ingest endpoint (POST) to support large cookies via JSON; id optional; userId cookie cache
+app.post('/ingest', express.json({ limit: '5mb' }), async (req, res) => {
+  if (!WORKER_SECRET) return res.status(503).json({ error: 'INGEST_WORKER_SECRET not configured' });
+  const provided = (req.header('x-worker-secret') || '').trim();
+  if (provided !== WORKER_SECRET) return res.status(401).json({ error: 'Unauthorized' });
+  const key = `${provided}:${req.ip || req.socket.remoteAddress || 'unknown'}:ingest`;
+  if (!takeToken(key)) return res.status(429).json({ error: 'Rate limit exceeded' });
+
+  try {
+    const body = req.body || {};
+    let url = body.url;
+    if (!url || typeof url !== 'string') return res.status(400).json({ error: 'Missing url' });
+    try { url = decodeURIComponent(url); } catch {}
+    const id = body.id || `job-${Date.now()}`;
+    const allowedTypes = ['youtube', 'x', 'facebook', 'reddit', 'tiktok'];
+    const rawType = body.type || 'youtube';
+    const type = allowedTypes.includes(rawType) ? rawType : 'youtube';
+
+    // If no cookies provided directly, but userId is present, attach cached cookies
+    let cookies_b64 = typeof body.cookies_b64 === 'string' ? body.cookies_b64 : undefined;
+    let cookies = typeof body.cookies === 'string' ? body.cookies : undefined;
+    if (!cookies_b64 && !cookies && body.userId) {
+      const cachedPath = getCachedCookiesForUser(body.userId);
+      if (cachedPath) {
+        try {
+          const data = fs.readFileSync(cachedPath);
+          cookies_b64 = Buffer.from(data).toString('base64');
+        } catch {}
+      } else {
+        return res.status(428).json({ error: 'Precondition Required: no cached cookies for userId', userId: body.userId });
+      }
     }
-    try {
-      body = JSON.parse(text);
-    } catch {
-      return res.status(400).json({ error: 'Invalid JSON body' });
-    }
+
+    const reqBody = { id, url, type, cookies_b64, cookies };
+    console.log('Ingest POST received', { id, url, type, hasCookiesB64: !!cookies_b64, hasCookies: !!cookies, userId: body.userId || null });
+    runIngest(reqBody).catch((e) => {
+      console.error('Failed to start ingest (POST)', { id, error: e?.message });
+    });
+    return res.status(202).json({ accepted: true, jobId: id });
+  } catch (err) {
+    return res.status(500).json({ accepted: false, error: String(err?.message || err) });
   }
-  
-  if (!body?.id || !body?.url || !body?.type) {
-    return res.status(400).json({ error: 'Missing id, url, or type' });
-  }
-  
-  // Enforce per-job user ownership when enabled
-  if (REQUIRE_INGEST_USER_ID && !body.userId) {
-    return res.status(400).json({ error: 'Missing userId (required by REQUIRE_INGEST_USER_ID)'});
-  }
-  
-  console.log('Ingest request received', { id: body.id, type: body.type, url: body.url });
-  runIngest(body).catch((e) => {
-    console.error('Failed to start ingest', { id: body.id, error: e?.message });
-  });
-  
-  return res.status(202).json({ accepted: true, jobId: body.id });
 });
 
 // Test endpoint
@@ -649,18 +711,21 @@ app.get('/ingest/test', async (req, res) => {
   const allowedTypes = ['youtube', 'x', 'facebook', 'reddit', 'tiktok'];
   const rawType = req.query.type || 'youtube';
   const type = allowedTypes.includes(rawType) ? rawType : 'youtube';
-  
-  console.log('Ingest test request received', { id, url, type });
-  runIngest({ id, url, type }).catch((e) => {
-    console.error('Failed to start ingest (test)', { id, error: e?.message });
-  });
-  
-  return res.status(202).json({ accepted: true, jobId: id });
+  const reqBody = {
+    id,
+    url,
+    type,
+    cookies_b64: req.query.cookies_b64 || undefined,
+    cookies: req.query.cookies || undefined,
+  };
+  console.log('Ingest test request received', reqBody);
+  try {
+    const result = await runIngest(reqBody);
+    res.json({ accepted: true, jobId: id, result });
+  } catch (err) {
+    res.status(500).json({ accepted: false, error: String(err?.message || err) });
+  }
 });
-
-// JSON parser for other routes
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Start server with runtime tool installation
 async function startServer() {
