@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Carrot Ingest Worker
 
 A Node.js video ingestion worker service for the Carrot platform.
@@ -42,6 +41,3 @@ The service is deployed using Docker images built in CI/CD:
 
 - `GET /healthz` - Detailed health status
 - `GET /` - Basic service info
-=======
-# carrot
->>>>>>> 275d151 (Add/ensure workflows)
