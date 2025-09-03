@@ -251,6 +251,14 @@ async function getCookiesFilePath() {
     // 1) Explicit file path
     const filePath = (process.env.YT_DLP_COOKIES_FILE || '').trim();
     if (filePath && fs.existsSync(filePath)) {
+      // If secret lives under /etc/secrets (read-only), copy to a writable temp file
+      if (filePath.startsWith('/etc/secrets/')) {
+        const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+        fs.copyFileSync(filePath, tmpCopy);
+        COOKIES_FILE_PATH = tmpCopy;
+        console.log('[INGEST] Using temp copy of cookies from secret:', tmpCopy);
+        return tmpCopy;
+      }
       COOKIES_FILE_PATH = filePath;
       console.log('[INGEST] Using cookies file path:', filePath);
       return filePath;
@@ -261,16 +269,20 @@ async function getCookiesFilePath() {
     try {
       const defaultSecret = '/etc/secrets/yt_cookies.txt';
       if (fs.existsSync(defaultSecret)) {
-        COOKIES_FILE_PATH = defaultSecret;
-        console.log('[INGEST] Using default secret cookies file:', defaultSecret);
-        return defaultSecret;
+        const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+        fs.copyFileSync(defaultSecret, tmpCopy);
+        COOKIES_FILE_PATH = tmpCopy;
+        console.log('[INGEST] Using temp copy of default secret cookies file:', tmpCopy);
+        return tmpCopy;
       }
       // Some Render setups mount the secret using the key name directly
       const altSecret = '/etc/secrets/YT_DLP_COOKIES_FILE';
       if (fs.existsSync(altSecret)) {
-        COOKIES_FILE_PATH = altSecret;
-        console.log('[INGEST] Using alt secret cookies file:', altSecret);
-        return altSecret;
+        const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
+        fs.copyFileSync(altSecret, tmpCopy);
+        COOKIES_FILE_PATH = tmpCopy;
+        console.log('[INGEST] Using temp copy of alt secret cookies file:', tmpCopy);
+        return tmpCopy;
       }
     } catch (_) {}
 
@@ -478,6 +490,16 @@ async function runIngest(request) {
   const url = request.url;
   const type = request.type;
 
+  // Ensure URL is not double-encoded (handle cases like ...watch%3Fv=...)
+  let url = request.url;
+  try {
+    if (/%[0-9A-Fa-f]{2}/.test(url)) {
+      const decoded = decodeURIComponent(url);
+      // Only accept decoded if it forms a valid URL
+      try { new URL(decoded); url = decoded; } catch {}
+    }
+  } catch {}
+
   const baseDir = path.join(os.tmpdir(), 'jobs', jobId);
   await ensureDir(baseDir);
 
@@ -626,7 +648,9 @@ app.post('/ingest', express.text({ type: '*/*', limit: '1mb' }), async (req, res
 
 // Test endpoint
 app.get('/ingest/test', async (req, res) => {
-  const url = req.query.url || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  // Decode percent-encoded URL if needed
+  let url = req.query.url || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+  try { url = decodeURIComponent(url); } catch {}
   const id = req.query.id || `job-${Date.now()}`;
   const allowedTypes = ['youtube', 'x', 'facebook', 'reddit', 'tiktok'];
   const rawType = req.query.type || 'youtube';
