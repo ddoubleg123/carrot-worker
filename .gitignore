@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.next/
+*.log
+*.mp4
+*.mov
+*.zip
+*.onnx
+*.pt
+*.bin
+*.db
+.env
+.env.local
+.DS_Store
+Thumbs.db
