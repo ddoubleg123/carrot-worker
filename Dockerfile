@@ -2,9 +2,9 @@ FROM node:20-bookworm-slim
 
 WORKDIR /app
 
-# Minimal system dependencies (curl for runtime downloads, certs for HTTPS) + ffmpeg runtime
+# Minimal system dependencies (curl for runtime downloads, certs for HTTPS) + ffmpeg
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+ && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg python3-pip \
  && rm -rf /var/lib/apt/lists/*
 
 # Copy package files and install dependencies
