@@ -24,17 +24,28 @@ async function installVideoTools() {
   }
   
   try {
-    // Try installing yt-dlp. Prefer pip when available; otherwise fall back to direct download.
+    // Try installing yt-dlp. Prefer pip (pip3/pip) with --user; otherwise fall back to direct download to a user-writable bin.
     console.log('[STARTUP] Installing yt-dlp...');
-    try {
-      await pExecFile('pip', ['install', '--user', '--upgrade', 'yt-dlp']);
-      console.log('[STARTUP] yt-dlp installed successfully via pip');
-    } catch (pipError) {
-      console.log(`[STARTUP] pip not available or failed (${pipError?.message}); attempting direct download...`);
+    const candidates = ['pip3', 'pip'];
+    let installedViaPip = false;
+    for (const pipCmd of candidates) {
       try {
-        await pExecFile('curl', ['-L', 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', '-o', '/usr/local/bin/yt-dlp']);
-        await pExecFile('chmod', ['a+rx', '/usr/local/bin/yt-dlp']);
-        console.log('[STARTUP] yt-dlp installed successfully via direct download');
+        await pExecFile(pipCmd, ['--version']);
+        await pExecFile(pipCmd, ['install', '--user', '--upgrade', 'yt-dlp']);
+        installedViaPip = true;
+        console.log(`[STARTUP] yt-dlp installed successfully via ${pipCmd} --user`);
+        break;
+      } catch (_) {}
+    }
+    if (!installedViaPip) {
+      console.log('[STARTUP] pip/pip3 not available or failed; attempting direct download to user bin...');
+      try {
+        const userBin = path.join(os.homedir(), '.local', 'bin');
+        await fs.promises.mkdir(userBin, { recursive: true }).catch(() => {});
+        const target = path.join(userBin, 'yt-dlp');
+        await pExecFile('curl', ['-L', 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp', '-o', target]);
+        await pExecFile('chmod', ['a+rx', target]);
+        console.log('[STARTUP] yt-dlp installed successfully via direct download to', target);
       } catch (dlError) {
         console.log(`[STARTUP] Failed to install yt-dlp via direct download: ${dlError?.message}`);
       }
@@ -253,6 +264,13 @@ async function getCookiesFilePath() {
         COOKIES_FILE_PATH = defaultSecret;
         console.log('[INGEST] Using default secret cookies file:', defaultSecret);
         return defaultSecret;
+      }
+      // Some Render setups mount the secret using the key name directly
+      const altSecret = '/etc/secrets/YT_DLP_COOKIES_FILE';
+      if (fs.existsSync(altSecret)) {
+        COOKIES_FILE_PATH = altSecret;
+        console.log('[INGEST] Using alt secret cookies file:', altSecret);
+        return altSecret;
       }
     } catch (_) {}
 
