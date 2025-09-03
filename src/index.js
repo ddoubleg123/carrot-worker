@@ -348,6 +348,15 @@ async function getCookiesFilePath() {
 }
 
 async function withCookiesArgs(args = []) {
+  // Highest priority: per-request override if present
+  try {
+    if (JOB_COOKIES_OVERRIDE && fs.existsSync(JOB_COOKIES_OVERRIDE)) {
+      console.log('[INGEST] Using per-request cookies override at:', JOB_COOKIES_OVERRIDE);
+      return [...args, '--cookies', JOB_COOKIES_OVERRIDE];
+    }
+  } catch (_) {}
+
+  // Next: environment-provided cookies (b64/plain or mounted files)
   const file = await getCookiesFilePath();
   if (file) return [...args, '--cookies', file];
   // Fallback to browser cookies if configured (useful for local debugging)
