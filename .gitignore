@@ -115,3 +115,9 @@ worker/tmp/
 tmp/
 *.mp4
 *.webm
+
+# Broadly ignore any dotenv files anywhere (except documented examples)
+**/.env*
+!**/.env.example
+# Specific carrot env safety (covers accidental copies)
+carrot/.env*
