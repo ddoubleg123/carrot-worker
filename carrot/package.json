@@ -10,10 +10,10 @@
     "lint": "next lint",
     "type-check": "tsc --noEmit"
   },
-"engines": { 
-  "node": "20.x", 
-  "npm": "10.x" },
-
+  "engines": {
+    "node": "20.x",
+    "npm": "10.x"
+  },
   "dependencies": {
     "@auth/core": "^0.40.0",
     "@auth/prisma-adapter": "^2.10.0",
@@ -29,6 +29,7 @@
     "@firebase/storage": "^0.14.0",
     "@fontsource/dm-sans": "^5.2.6",
     "@fontsource/poppins": "^5.2.6",
+    "@google-cloud/storage": "^7.17.0",
     "@headlessui/react": "^2.2.6",
     "@heroicons/react": "^2.1.1",
     "@hookform/resolvers": "^3.3.4",

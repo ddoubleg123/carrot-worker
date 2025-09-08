@@ -1098,7 +1098,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
 
   return (
     <>
-      {isOpen && (
+      {isOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
           <div className="relative bg-white rounded-2xl p-0 w-full max-w-2xl shadow-xl overflow-hidden">
@@ -1514,7 +1514,7 @@ export default function ComposerModal({ isOpen, onClose, onPost, onPostUpdate }:
             </form>
           </div>
         </div>
-      )}
+      ) : null}
 
         {/* Audio Recorder Modal */}
         {showAudioRecorder && (
