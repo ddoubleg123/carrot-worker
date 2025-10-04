@@ -7,6 +7,25 @@ const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+// Optional cookie broker configuration (for auto-fetch/refresh)
+const COOKIE_FETCH_URL = process.env.COOKIE_FETCH_URL || '';
+const COOKIE_FETCH_SECRET = process.env.COOKIE_FETCH_SECRET || '';
+
+// Default polite client profile for yt-dlp
+const DEFAULT_UA = process.env.YTDLP_USER_AGENT || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
+const DEFAULT_ACCEPT_LANG = process.env.YTDLP_ACCEPT_LANGUAGE || 'en-US,en;q=0.9';
+
+// Boot banner to help verify which commit is running in container logs
+console.log('[BOOT] carrot-worker starting', {
+  commit: process.env.RELEASE_SHA || process.env.GITHUB_SHA || process.env.RENDER_GIT_COMMIT || 'unknown'
+});
+
+// Lightweight fetch helper (uses global fetch if available; falls back to node-fetch)
+async function doFetch(input, init) {
+  if (typeof fetch === 'function') return fetch(input, init);
+  const mod = await import('node-fetch');
+  return mod.default(input, init);
+}
 
 // Runtime tool installation
 async function installVideoTools() {
@@ -184,6 +203,7 @@ app.get('/debug', async (req, res) => {
       YT_DLP_COOKIES_FILE: process.env.YT_DLP_COOKIES_FILE,
       HAS_YT_DLP_COOKIES_B64: Boolean(process.env.YT_DLP_COOKIES_B64),
       YT_DLP_COOKIES_FROM_BROWSER: process.env.YT_DLP_COOKIES_FROM_BROWSER,
+      YT_DLP_COOKIES_FROM_BROWSER_PROFILE: process.env.YT_DLP_COOKIES_FROM_BROWSER_PROFILE,
       INGEST_TRIM_SECONDS: process.env.INGEST_TRIM_SECONDS,
     },
     binaries: checkPaths,
@@ -236,19 +256,12 @@ function isYouTube(url, type) {
   }
 }
 
-async function run(cmd, args, opts = {}) {
-  const pExecFile = promisify(execFile);
-  const res = await pExecFile(cmd, args, { maxBuffer: 1024 * 1024 * 50, ...opts });
-  return res;
-}
-
-// Manage cookies for yt-dlp from an env var (YT_DLP_COOKIES)
-let COOKIES_FILE_PATH = null;
-// Per-job override path (temporary file) if the request supplies cookies
-let JOB_COOKIES_OVERRIDE = null;
-// In-memory per-user cookies cache: { [userId]: { path, expiresAt } }
-const COOKIES_CACHE = Object.create(null);
+// Cookies management and yt-dlp helpers
+let COOKIES_FILE_PATH = null; // from env/mounted secrets
+let JOB_COOKIES_OVERRIDE = null; // per-request temp path
+const COOKIES_CACHE = Object.create(null); // { [userId]: { path, expiresAt } }
 const COOKIES_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
+
 function putCookiesForUser(userId, contentBuffer) {
   const tmp = path.join(os.tmpdir(), `yt_cookies_${userId}_${Date.now()}.txt`);
   fs.writeFileSync(tmp, contentBuffer, { mode: 0o600 });
@@ -256,6 +269,7 @@ function putCookiesForUser(userId, contentBuffer) {
   console.log('[INGEST] Cached cookies for user:', userId, 'ttlMs=', COOKIES_TTL_MS);
   return tmp;
 }
+
 function getCachedCookiesForUser(userId) {
   const entry = COOKIES_CACHE[userId];
   if (!entry) return null;
@@ -267,8 +281,60 @@ function getCachedCookiesForUser(userId) {
   return entry.path;
 }
 
+async function fetchAndCacheCookies(userId, force = false) {
+  if (!userId) throw new Error('fetchAndCacheCookies: userId required');
+  if (!COOKIE_FETCH_URL || !COOKIE_FETCH_SECRET) throw new Error('COOKIE_FETCH_URL/SECRET not configured');
+  if (!force) {
+    const cached = getCachedCookiesForUser(userId);
+    if (cached) return { path: cached };
+  }
+  const url = COOKIE_FETCH_URL.includes('?')
+    ? `${COOKIE_FETCH_URL}&userId=${encodeURIComponent(userId)}`
+    : `${COOKIE_FETCH_URL}?userId=${encodeURIComponent(userId)}`;
+  const headers = {
+    'Authorization': `Bearer ${COOKIE_FETCH_SECRET}`,
+    'ngrok-skip-browser-warning': 'true',
+  };
+  let res;
+  try {
+    res = await doFetch(url, { headers });
+  } catch (e) {
+    throw new Error(`cookie fetch network error: ${e?.message}`);
+  }
+  if (!res.ok) throw new Error(`cookie fetch ${res.status}`);
+  const data = await res.json();
+  const b64 = data?.cookies_b64 || data?.b64;
+  if (!b64 || typeof b64 !== 'string' || !b64.trim()) throw new Error('cookie fetch returned empty');
+  let buf;
+  try { buf = Buffer.from(b64.trim(), 'base64'); } catch { throw new Error('cookie fetch invalid base64'); }
+  const filePath = putCookiesForUser(userId, buf);
+  return { path: filePath, ua: data?.ua, client: data?.playerClient };
+}
+
+function looksLikeCookieExpiry(msg = '') {
+  const s = String(msg || '');
+  return /cookies?.*no longer valid/i.test(s)
+    || /confirm you.?re not a bot/i.test(s)
+    || /HTTP Error\s*(429|403)/i.test(s)
+    || /Please sign in/i.test(s);
+}
+
+function appendYtClientArgs(args, ua, playerClient) {
+  const out = [...args,
+    '--force-ipv4',
+    '--user-agent', ua || DEFAULT_UA,
+    '--add-header', `Accept-Language: ${DEFAULT_ACCEPT_LANG}`,
+    '--sleep-requests', '1',
+    '--retries', '10',
+    '--retry-sleep', '1',
+    '--concurrent-fragments', '1',
+  ];
+  if (playerClient) out.push('--extractor-args', `youtube:player_client=${playerClient}`);
+  return out;
+}
+
 async function getCookiesFilePath() {
-  // Prefer environment-provided cookies to avoid read-only mount issues
+  // Prefer env b64/plain
   const b64 = (process.env.YT_DLP_COOKIES_B64 || '').trim();
   if (b64) {
     const tmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
@@ -295,10 +361,9 @@ async function getCookiesFilePath() {
     }
   }
 
-  // 1) Explicit file path
+  // Explicit file path
   const filePath = (process.env.YT_DLP_COOKIES_FILE || '').trim();
   if (filePath && fs.existsSync(filePath)) {
-    // If under /etc/secrets or any path, try to read then write a temp copy (read-only mounts may not be readable)
     try {
       const data = fs.readFileSync(filePath);
       const tmpCopy = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
@@ -311,7 +376,7 @@ async function getCookiesFilePath() {
     }
   }
 
-  // 2) Common secret mount locations
+  // Common secret mount locations
   try {
     const defaultSecret = '/etc/secrets/yt_cookies.txt';
     if (fs.existsSync(defaultSecret)) {
@@ -326,7 +391,6 @@ async function getCookiesFilePath() {
         console.warn('[INGEST] Cannot read default secret cookies file, need env fallback:', e?.message);
       }
     }
-    // Some Render setups mount the secret using the key name directly
     const altSecret = '/etc/secrets/YT_DLP_COOKIES_FILE';
     if (fs.existsSync(altSecret)) {
       try {
@@ -342,13 +406,11 @@ async function getCookiesFilePath() {
     }
   } catch (_) {}
 
-  // If we reach here, we have no readable cookies
   COOKIES_FILE_PATH = '';
   return '';
 }
 
 async function withCookiesArgs(args = []) {
-  // Highest priority: per-request override if present
   try {
     if (JOB_COOKIES_OVERRIDE && fs.existsSync(JOB_COOKIES_OVERRIDE)) {
       console.log('[INGEST] Using per-request cookies override at:', JOB_COOKIES_OVERRIDE);
@@ -356,13 +418,34 @@ async function withCookiesArgs(args = []) {
     }
   } catch (_) {}
 
-  // Next: environment-provided cookies (b64/plain or mounted files)
   const file = await getCookiesFilePath();
   if (file) return [...args, '--cookies', file];
-  // Fallback to browser cookies if configured (useful for local debugging)
   const fromBrowser = (process.env.YT_DLP_COOKIES_FROM_BROWSER || '').trim();
-  if (fromBrowser) return [...args, '--cookies-from-browser', fromBrowser];
+  if (fromBrowser) {
+    const profile = (process.env.YT_DLP_COOKIES_FROM_BROWSER_PROFILE || '').trim();
+    const browserArg = profile ? `${fromBrowser}:${profile}` : fromBrowser;
+    return [...args, '--cookies-from-browser', browserArg];
+  }
   return args;
+}
+
+async function run(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) return resolve({ code, stdout, stderr });
+      const err = new Error(`${cmd} ${args.join(' ')} exited with ${code}: ${stderr || stdout}`);
+      err.code = code;
+      err.stdout = stdout;
+      err.stderr = stderr;
+      reject(err);
+    });
+  });
 }
 
 function tryRequireStorage() {
@@ -378,6 +461,7 @@ function tryRequireStorage() {
   }
 }
 
+// Upload a file to Firebase Storage / GCS and return a public or signed URL
 async function uploadFileToFirebase(localPath, destPath) {
   const bucketName = process.env.FIREBASE_STORAGE_BUCKET;
   if (!bucketName) throw new Error('FIREBASE_STORAGE_BUCKET not set');
@@ -389,7 +473,7 @@ async function uploadFileToFirebase(localPath, destPath) {
   // 1) GOOGLE_APPLICATION_CREDENTIALS_JSON (full JSON string)
   // 2) Individual env vars: GCS_CLIENT_EMAIL, GCS_PRIVATE_KEY, GCP_PROJECT_ID/FIREBASE_PROJECT_ID
   const credsJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
-  let storageOptions = undefined;
+  let storageOptions;
   if (credsJson) {
     storageOptions = { credentials: JSON.parse(credsJson) };
   } else {
@@ -397,7 +481,7 @@ async function uploadFileToFirebase(localPath, destPath) {
     let private_key = process.env.FIREBASE_PRIVATE_KEY || process.env.GCS_PRIVATE_KEY || process.env.GOOGLE_PRIVATE_KEY;
     const project_id = process.env.FIREBASE_PROJECT_ID || process.env.GCP_PROJECT_ID || process.env.GOOGLE_PROJECT_ID;
     if (client_email && private_key) {
-      // Render often requires escaped newlines; normalize them.
+      // Normalize escaped newlines
       private_key = private_key.replace(/\\n/g, '\n');
       storageOptions = { credentials: { client_email, private_key, project_id } };
     }
@@ -410,14 +494,12 @@ async function uploadFileToFirebase(localPath, destPath) {
   // Try to make public; if not allowed, fall back to signed URL
   try {
     await file.makePublic();
-    // Prefer Firebase domain if the bucket ends with firebasestorage.app
+    // Prefer Firebase domain if available
     if ((bucketName || '').endsWith('firebasestorage.app')) {
       const encoded = encodeURIComponent(destPath);
-      const fbUrl = `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encoded}?alt=media`;
-      return fbUrl;
+      return `https://firebasestorage.googleapis.com/v0/b/${bucketName}/o/${encoded}?alt=media`;
     }
-    const gcsUrl = `https://storage.googleapis.com/${bucketName}/${encodeURI(destPath)}`;
-    return gcsUrl;
+    return `https://storage.googleapis.com/${bucketName}/${encodeURI(destPath)}`;
   } catch {
     const [signedUrl] = await file.getSignedUrl({ action: 'read', expires: Date.now() + 1000 * 60 * 60 * 24 * 30 });
     return signedUrl;
@@ -429,7 +511,7 @@ async function generateThumbnail(inputVideoPath, outputThumbPath) {
   await run('ffmpeg', ['-y', '-ss', '2', '-i', inputVideoPath, '-frames:v', '1', '-q:v', '2', outputThumbPath]);
 }
 
-async function downloadYouTubeAsMp4(url, outDir) {
+async function downloadYouTubeAsMp4(url, outDir, hints = {}) {
   const outTemplate = path.join(outDir, 'video.%(ext)s');
   // Prefer mp4. If not available, merge best and force mp4 container
   const baseArgs = [
@@ -438,7 +520,8 @@ async function downloadYouTubeAsMp4(url, outDir) {
     '-o', outTemplate,
     url
   ];
-  const args = await withCookiesArgs(baseArgs);
+  const argsWithCookies = await withCookiesArgs(baseArgs);
+  const args = appendYtClientArgs(argsWithCookies, hints.ua, hints.playerClient);
   await run('yt-dlp', args);
   // Determine resulting file
   const entries = await fs.promises.readdir(outDir);
@@ -454,10 +537,11 @@ async function downloadYouTubeAsMp4(url, outDir) {
   return fullPath;
 }
 
-async function downloadAudioAsMp3(url, outDir) {
+async function downloadAudioAsMp3(url, outDir, hints = {}) {
   const outTemplate = path.join(outDir, 'audio.%(ext)s');
   const baseArgs = ['-x', '--audio-format', 'mp3', '--audio-quality', '0', '-o', outTemplate, url];
-  const args = await withCookiesArgs(baseArgs);
+  const argsWithCookies = await withCookiesArgs(baseArgs);
+  const args = appendYtClientArgs(argsWithCookies, hints.ua, hints.playerClient);
   await run('yt-dlp', args);
   const entries = await fs.promises.readdir(outDir);
   const audioFile = entries.find(f => f.startsWith('audio.') && f.endsWith('.mp3'))
@@ -472,9 +556,10 @@ async function downloadAudioAsMp3(url, outDir) {
   return fullPath;
 }
 
-async function fetchYtMetadata(url) {
+async function fetchYtMetadata(url, hints = {}) {
   try {
-    const args = await withCookiesArgs(['-J', url]);
+    const argsWithCookies = await withCookiesArgs(['-J', url]);
+    const args = appendYtClientArgs(argsWithCookies, hints.ua, hints.playerClient);
     const { stdout } = await run('yt-dlp', args);
     return JSON.parse(stdout);
   } catch (e) {
@@ -523,8 +608,9 @@ async function runIngest(request) {
   const baseDir = path.join(os.tmpdir(), 'jobs', jobId);
   await ensureDir(baseDir);
 
-  // Prepare per-request cookies if provided
+  // Prepare per-request cookies if provided; otherwise use broker for userId (if configured)
   let jobCookieTmp = null;
+  let brokerHints = { ua: undefined, playerClient: undefined };
   try {
     if (request.cookies_b64 && typeof request.cookies_b64 === 'string' && request.cookies_b64.trim().length > 0) {
       jobCookieTmp = path.join(os.tmpdir(), `yt_cookies_${Date.now()}.txt`);
@@ -537,13 +623,25 @@ async function runIngest(request) {
       fs.writeFileSync(jobCookieTmp, request.cookies.trim(), { mode: 0o600 });
       JOB_COOKIES_OVERRIDE = jobCookieTmp;
       console.log('[INGEST] Using per-request cookies (plain) at:', jobCookieTmp);
+    } else if (request.userId && COOKIE_FETCH_URL && COOKIE_FETCH_SECRET) {
+      try {
+        const fetched = await fetchAndCacheCookies(request.userId);
+        if (fetched?.path) {
+          JOB_COOKIES_OVERRIDE = fetched.path;
+          brokerHints.ua = fetched.ua || brokerHints.ua;
+          brokerHints.playerClient = fetched.client || brokerHints.playerClient;
+          console.log('[INGEST] Using broker cookies for userId', request.userId, 'at:', fetched.path);
+        }
+      } catch (e) {
+        console.warn('[INGEST] Broker cookie fetch failed:', e?.message);
+      }
     }
   } catch (e) {
     console.warn('[INGEST] Failed to prepare per-request cookies:', e?.message);
   }
 
   const isYT = isYouTube(url, type);
-  const meta = isYT ? await fetchYtMetadata(url) : null;
+  const meta = isYT ? await fetchYtMetadata(url, brokerHints) : null;
 
   let videoPath = null;
   let audioPath = null;
@@ -554,14 +652,54 @@ async function runIngest(request) {
     await sendCallback(jobId, { status: 'downloading', progress: 1, sourceUrl: url });
     if (isYT || type === 'video') {
       // Always fetch full MP4 for YouTube
-      videoPath = await downloadYouTubeAsMp4(url, baseDir);
+      try {
+        videoPath = await downloadYouTubeAsMp4(url, baseDir, brokerHints);
+      } catch (err) {
+        const msg = err?.message || '';
+        if (request.userId && COOKIE_FETCH_URL && COOKIE_FETCH_SECRET && looksLikeCookieExpiry(msg)) {
+          console.warn('[INGEST] Detected cookie expiry/429; refreshing broker cookies and retrying once...');
+          try {
+            const refreshed = await fetchAndCacheCookies(request.userId, true);
+            if (refreshed?.path) {
+              JOB_COOKIES_OVERRIDE = refreshed.path;
+              brokerHints.ua = refreshed.ua || brokerHints.ua;
+              brokerHints.playerClient = refreshed.client || brokerHints.playerClient;
+            }
+            videoPath = await downloadYouTubeAsMp4(url, baseDir, brokerHints);
+          } catch (e2) {
+            throw e2;
+          }
+        } else {
+          throw err;
+        }
+      }
       thumbPath = path.join(baseDir, 'thumb.jpg');
       await generateThumbnail(videoPath, thumbPath);
     } else if (type === 'audio') {
-      audioPath = await downloadAudioAsMp3(url, baseDir);
+      try {
+        audioPath = await downloadAudioAsMp3(url, baseDir, brokerHints);
+      } catch (err) {
+        const msg = err?.message || '';
+        if (request.userId && COOKIE_FETCH_URL && COOKIE_FETCH_SECRET && looksLikeCookieExpiry(msg)) {
+          console.warn('[INGEST] Detected cookie expiry/429 (audio); refreshing broker cookies and retrying once...');
+          try {
+            const refreshed = await fetchAndCacheCookies(request.userId, true);
+            if (refreshed?.path) {
+              JOB_COOKIES_OVERRIDE = refreshed.path;
+              brokerHints.ua = refreshed.ua || brokerHints.ua;
+              brokerHints.playerClient = refreshed.client || brokerHints.playerClient;
+            }
+            audioPath = await downloadAudioAsMp3(url, baseDir, brokerHints);
+          } catch (e2) {
+            throw e2;
+          }
+        } else {
+          throw err;
+        }
+      }
     } else {
       // Fallback: attempt best video to mp4
-      videoPath = await downloadYouTubeAsMp4(url, baseDir);
+      videoPath = await downloadYouTubeAsMp4(url, baseDir, brokerHints);
       thumbPath = path.join(baseDir, 'thumb.jpg');
       await generateThumbnail(videoPath, thumbPath);
     }
@@ -690,14 +828,21 @@ app.post('/ingest', express.json({ limit: '5mb' }), async (req, res) => {
     let cookies_b64 = typeof body.cookies_b64 === 'string' ? body.cookies_b64 : undefined;
     let cookies = typeof body.cookies === 'string' ? body.cookies : undefined;
     if (!cookies_b64 && !cookies && body.userId) {
-      const cachedPath = getCachedCookiesForUser(body.userId);
+      // Try cached first
+      let cachedPath = getCachedCookiesForUser(body.userId);
+      if (!cachedPath && COOKIE_FETCH_URL && COOKIE_FETCH_SECRET) {
+        try {
+          const fetched = await fetchAndCacheCookies(body.userId);
+          cachedPath = fetched?.path;
+        } catch (e) {
+          console.warn('[INGEST] broker fetch during /ingest failed:', e?.message);
+        }
+      }
       if (cachedPath) {
         try {
           const data = fs.readFileSync(cachedPath);
           cookies_b64 = Buffer.from(data).toString('base64');
         } catch {}
-      } else {
-        return res.status(428).json({ error: 'Precondition Required: no cached cookies for userId', userId: body.userId });
       }
     }
 
@@ -736,10 +881,122 @@ app.get('/ingest/test', async (req, res) => {
   }
 });
 
+// Cleanup endpoint for disk space management
+app.post('/cleanup', async (req, res) => {
+  try {
+    console.log('[CLEANUP] Starting disk cleanup...');
+    let cleaned = 0;
+    let freed_mb = 0;
+    const errors = [];
+
+    // Clean temp directories
+    const temp_dirs = ['/tmp', '/var/tmp', os.tmpdir()];
+    for (const temp_dir of temp_dirs) {
+      if (fs.existsSync(temp_dir)) {
+        try {
+          const items = fs.readdirSync(temp_dir);
+          for (const item of items) {
+            const item_path = path.join(temp_dir, item);
+            try {
+              const stat = fs.statSync(item_path);
+              if (stat.isFile()) {
+                const size = stat.size;
+                fs.unlinkSync(item_path);
+                cleaned++;
+                freed_mb += size / (1024 * 1024);
+              } else if (stat.isDirectory() && (item.startsWith('ghibli-') || item.startsWith('generated_') || item.startsWith('tmp_'))) {
+                // Calculate directory size before deletion
+                let dir_size = 0;
+                try {
+                  const walkDir = (dir) => {
+                    const files = fs.readdirSync(dir);
+                    for (const file of files) {
+                      const file_path = path.join(dir, file);
+                      const file_stat = fs.statSync(file_path);
+                      if (file_stat.isFile()) {
+                        dir_size += file_stat.size;
+                      } else if (file_stat.isDirectory()) {
+                        walkDir(file_path);
+                      }
+                    }
+                  };
+                  walkDir(item_path);
+                  freed_mb += dir_size / (1024 * 1024);
+                } catch (e) {
+                  // Ignore size calculation errors
+                }
+                fs.rmSync(item_path, { recursive: true, force: true });
+                cleaned++;
+              }
+            } catch (e) {
+              errors.push(`Failed to clean ${item_path}: ${e.message}`);
+            }
+          }
+        } catch (e) {
+          errors.push(`Failed to read ${temp_dir}: ${e.message}`);
+        }
+      }
+    }
+
+    // Clean old generated images (keep only last 10)
+    const output_dir = path.join(process.cwd(), 'outputs');
+    if (fs.existsSync(output_dir)) {
+      try {
+        const files = fs.readdirSync(output_dir);
+        const image_files = files.filter(f => f.endsWith('.png') || f.endsWith('.jpg') || f.endsWith('.jpeg'));
+        if (image_files.length > 10) {
+          // Sort by modification time, keep newest 10
+          const files_with_stats = image_files.map(f => ({
+            name: f,
+            path: path.join(output_dir, f),
+            mtime: fs.statSync(path.join(output_dir, f)).mtime
+          }));
+          files_with_stats.sort((a, b) => b.mtime - a.mtime);
+          
+          for (const old_file of files_with_stats.slice(10)) {
+            try {
+              const size = fs.statSync(old_file.path).size;
+              fs.unlinkSync(old_file.path);
+              cleaned++;
+              freed_mb += size / (1024 * 1024);
+            } catch (e) {
+              errors.push(`Failed to clean ${old_file.path}: ${e.message}`);
+            }
+          }
+        }
+      } catch (e) {
+        errors.push(`Failed to clean outputs directory: ${e.message}`);
+      }
+    }
+
+    console.log(`[CLEANUP] Completed: ${cleaned} items cleaned, ${freed_mb.toFixed(1)}MB freed`);
+    
+    res.json({
+      ok: true,
+      message: `Cleaned ${cleaned} items, freed ${freed_mb.toFixed(1)}MB`,
+      details: {
+        cleaned_files: cleaned,
+        freed_space_mb: freed_mb,
+        errors: errors
+      }
+    });
+  } catch (err) {
+    console.error('[CLEANUP] Error:', err);
+    res.status(500).json({
+      ok: false,
+      message: `Cleanup failed: ${err.message}`
+    });
+  }
+});
+
 // Start server with runtime tool installation
 async function startServer() {
   // Install video tools at startup
   await installVideoTools();
+  console.log('[STARTUP] Broker config', {
+    hasCookieFetchUrl: Boolean(COOKIE_FETCH_URL),
+    hasCookieFetchSecret: Boolean(COOKIE_FETCH_SECRET)
+  });
   
   const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`[HTTP] Server listening on 0.0.0.0:${PORT}`);

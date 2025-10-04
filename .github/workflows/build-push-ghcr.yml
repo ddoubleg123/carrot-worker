@@ -3,6 +3,8 @@ name: Build and Push to GHCR
 on:
   push:
     branches: [ main ]
+    paths:
+      - 'carrot-worker/**'
   workflow_dispatch: {}
 
 permissions:
@@ -12,9 +14,9 @@ permissions:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    defaults:
+      run:
+        working-directory: carrot-worker
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,8 +31,8 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ secrets.GHCR_USERNAME }}
-          password: ${{ secrets.GHCR_TOKEN }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata (tags, labels)
         id: meta
@@ -45,7 +47,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ./carrot-worker
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
